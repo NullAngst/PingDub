@@ -44,7 +44,7 @@ jobs:
 
       # Steps 4 to 11 of the spec live in one script so they run locally too.
       - name: Build Qt deps, FFmpeg, libsoxr, zvbi, PingDub; test; package
-        run: packaging/build-appimage.sh
+        run: bash packaging/build-appimage.sh
 
       - name: AppImage smoke test
         run: |
