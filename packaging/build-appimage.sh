@@ -4,7 +4,7 @@
 # linuxdeploy + linuxdeploy-plugin-qt and the static type 2 AppImage runtime.
 #
 # CI runs this inside ubuntu:22.04. It runs on a desktop too:
-#   packaging/build-appimage.sh
+#   bash packaging/build-appimage.sh
 # Environment:
 #   WORK=dir            build folder (default: build-appimage)
 #   USE_SYSTEM_QT=1     use the qmake6 on PATH instead of downloading Qt
@@ -39,13 +39,25 @@ fetch_tag() {
     git -c advice.detachedHead=false clone -q --depth 1 --branch "$tag" "$url" "$dir"
 }
 
+# --- Build tools ---------------------------------------------------------------
+# Current Qt needs a newer CMake than distros like Ubuntu 22.04 ship, so the
+# latest CMake and aqtinstall go into a venv here. A venv also keeps pip clear
+# of PEP 668 on newer distros.
+step "Build tools"
+TOOLS=$WORK/tools
+[ -x "$TOOLS/bin/python3" ] || python3 -m venv "$TOOLS"
+"$TOOLS/bin/python3" -m pip install --quiet --upgrade pip
+"$TOOLS/bin/python3" -m pip install --quiet --upgrade cmake aqtinstall
+export PATH=$TOOLS/bin:$PATH
+hash -r
+cmake --version | head -1
+
 # --- 4. Qt ---------------------------------------------------------------------
 step "Qt 6"
 if [ "${USE_SYSTEM_QT:-0}" = "1" ]; then
     QMAKE=$(command -v qmake6 || command -v qmake)
     QT_DIR=$("$QMAKE" -query QT_INSTALL_PREFIX)
 else
-    python3 -m pip install --quiet --upgrade aqtinstall
     QT_VER=$(python3 -m aqt list-qt linux desktop --spec 6 --latest-version)
     # Qt 6.7 renamed the desktop arch from gcc_64 to linux_gcc_64.
     QT_ARCH=$(python3 -m aqt list-qt linux desktop --arch "$QT_VER" | tr ' ' '\n' | grep -E '^(linux_)?gcc_64$' | head -1)
