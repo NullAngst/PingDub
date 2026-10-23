@@ -159,8 +159,12 @@ export APPIMAGE_EXTRACT_AND_RUN=1
 APPDIR=$WORK/AppDir
 rm -rf "$APPDIR"
 DESTDIR=$APPDIR cmake --install "$BUILD"
-# Wayland and X11 platform plugins both go in.
-export EXTRA_PLATFORM_PLUGINS="libqwayland-egl.so;libqwayland-generic.so;libqxcb.so"
+# Wayland and X11 platform plugins both go in. The list comes from what this Qt
+# ships: Qt 6.10 merged libqwayland-egl.so and libqwayland-generic.so into one
+# libqwayland.so, and older Qt still has the split pair.
+PLATFORMS=$(cd "$QT_PLUGINS/platforms" && ls libqwayland*.so libqxcb.so | paste -sd ';')
+printf 'Platform plugins: %s\n' "$PLATFORMS"
+export EXTRA_PLATFORM_PLUGINS=$PLATFORMS
 export EXTRA_QT_MODULES="svg"
 # Libraries that must come from the host: a bundled alsa-lib cannot load the
 # host's ALSA plugins (pipewire PCM, .asoundrc); the rest are tied to the
@@ -176,6 +180,19 @@ EXCLUDES=(--exclude-library 'libasound.so*' --exclude-library 'libudev.so*' --ex
     --icon-file "$APPDIR/usr/share/icons/hicolor/scalable/apps/io.github.nullangst.PingDub.svg" \
     "${EXCLUDES[@]}" \
     --plugin qt
+
+# The Wayland platform plugin is useless without its shell, decoration and
+# graphics integration plugins. linuxdeploy-plugin-qt normally brings them;
+# copy any it skipped. Their RPATH ($ORIGIN/../../lib) already fits the AppDir,
+# and their Qt dependencies came in with libqwayland.
+for d in wayland-shell-integration wayland-decoration-client wayland-graphics-integration-client; do
+    if [ -d "$QT_PLUGINS/$d" ] && [ ! -d "$APPDIR/usr/plugins/$d" ]; then
+        printf 'Adding missing Qt plugin folder %s\n' "$d"
+        mkdir -p "$APPDIR/usr/plugins"
+        cp -a "$QT_PLUGINS/$d" "$APPDIR/usr/plugins/"
+    fi
+done
+ls "$APPDIR"/usr/plugins/platforms/
 
 # Fail if a host-only library slipped in.
 BAD=$(find "$APPDIR" \( -name 'libasound.so*' -o -name 'libudev.so*' -o -name 'libGL.so*' -o -name 'libEGL.so*' \
