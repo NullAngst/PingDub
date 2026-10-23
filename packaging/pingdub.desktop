@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=PingDub
+GenericName=Analog Video Capture
+Comment=Capture VHS, Hi8, LaserDisc and other analog video losslessly
+Exec=pingdub
+Icon=io.github.nullangst.PingDub
+Terminal=false
+Categories=AudioVideo;Video;Recorder;
+Keywords=capture;VHS;analog;VirtualDub;S-video;composite;EasyCap;
+StartupWMClass=pingdub

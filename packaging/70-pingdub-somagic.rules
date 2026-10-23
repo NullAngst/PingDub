@@ -1,0 +1,7 @@
+# PingDub: let the logged-in user talk to Somagic EasyCaps through libusb.
+# PingDub offers to install this file to /etc/udev/rules.d/ (Tools > Diagnostics > Somagic setup).
+SUBSYSTEM=="usb", ATTR{idVendor}=="1c88", ATTR{idProduct}=="0007", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1c88", ATTR{idProduct}=="003c", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1c88", ATTR{idProduct}=="003d", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1c88", ATTR{idProduct}=="003e", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1c88", ATTR{idProduct}=="003f", TAG+="uaccess"

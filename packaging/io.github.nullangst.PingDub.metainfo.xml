@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.nullangst.PingDub</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>PingDub</name>
+  <summary>Lossless analog video capture with correct timing</summary>
+  <description>
+    <p>
+      PingDub captures composite and S-video from analog capture devices and writes the untouched
+      video and audio stream to disk, with every frame accounted for and audio in sync at the end
+      of a six-hour tape. It is modeled on the capture mode of VirtualDub, rewritten for Linux.
+    </p>
+    <p>
+      Output is FFV1 and PCM in Matroska by default, tagged with field order, pixel aspect and
+      color so HandBrake reads them with no manual settings. Dropped and inserted frames, xruns,
+      clock drift and signal changes are on screen during capture and logged afterward.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.nullangst.PingDub.desktop</launchable>
+  <url type="homepage">https://github.com/NullAngst/PingDub</url>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Video</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-10-23"/>
+  </releases>
+</component>
