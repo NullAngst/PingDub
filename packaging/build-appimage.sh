@@ -72,6 +72,11 @@ QT_PLUGINS=$("$QMAKE" -query QT_INSTALL_PLUGINS)
 ls "$QT_PLUGINS"/platforms/libqwayland*.so >/dev/null 2>&1 || { printf 'Qt has no Wayland platform plugin\n' >&2; exit 1; }
 ls "$QT_PLUGINS"/platforms/libqxcb.so >/dev/null
 export QMAKE
+# linuxdeploy resolves libraries through the loader path, and a downloaded Qt
+# sits outside it. Appended so the FFmpeg in $PREFIX still wins over any
+# system copy when Qt is the distro's.
+QT_LIBS=$("$QMAKE" -query QT_INSTALL_LIBS)
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$QT_LIBS
 
 if [ "${SKIP_DEPS:-0}" != "1" ]; then
 # --- 5. FFmpeg ---------------------------------------------------------------
