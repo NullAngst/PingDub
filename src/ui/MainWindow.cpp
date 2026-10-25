@@ -28,6 +28,7 @@
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QFrame>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QLabel>
@@ -36,7 +37,10 @@
 #include <QMessageBox>
 #include <QProgressDialog>
 #include <QPushButton>
+#include <QScreen>
+#include <QSettings>
 #include <QShortcut>
+#include <QSizePolicy>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QUrl>
@@ -106,7 +110,29 @@ MainWindow::MainWindow(DeviceScanner* scanner, QWidget* parent) : QMainWindow(pa
         onDeviceChanged();
     }
     updateBanner();
-    resize(1280, 860);
+    restoreLayout();
+}
+
+void MainWindow::restoreLayout() {
+    QSettings st(ProfileStore::appSettingsPath(), QSettings::IniFormat);
+    const bool restored = restoreGeometry(st.value("ui/geometry").toByteArray());
+    m_split->restoreState(st.value("ui/splitter").toByteArray());
+    // The window has to fit the screen it opens on. With desktop scaling a
+    // 1920x1080 screen at 150% is 1280x720 to Qt, so a fixed 1280x860 hung
+    // off the right and bottom edges.
+    QScreen* sc = screen() ? screen() : QGuiApplication::primaryScreen();
+    if (!sc) {
+        if (!restored) resize(1280, 860);
+        return;
+    }
+    const QRect avail = sc->availableGeometry();
+    const QSize room(avail.width() * 95 / 100, avail.height() * 92 / 100);
+    QSize want = restored ? size() : QSize(1280, 860);
+    want = want.boundedTo(room).expandedTo(minimumSizeHint());
+    if (!restored || want != size()) {
+        resize(want);
+        move(avail.center() - QPoint(want.width() / 2, want.height() / 2));
+    }
 }
 
 MainWindow::~MainWindow() = default;
@@ -220,19 +246,24 @@ void MainWindow::buildUi() {
     m_banner->hide();
     v->addWidget(m_banner);
 
-    auto* mid = new QHBoxLayout;
-    auto* left = new QVBoxLayout;
-    m_preview = new PreviewWidget(central);
+    // The side panel sits in a splitter so its width follows the font and the
+    // user can drag it wider; a fixed pixel width clipped the combo boxes and
+    // the browse button with larger desktop fonts.
+    m_split = new QSplitter(Qt::Horizontal, central);
+    m_split->setChildrenCollapsible(false);
+    auto* leftBox = new QWidget(m_split);
+    auto* left = new QVBoxLayout(leftBox);
+    left->setContentsMargins(0, 0, 0, 0);
+    m_preview = new PreviewWidget(leftBox);
     const QString d = m_ctl->settings().previewDeinterlace;
     m_preview->setDeinterlace(d == "bob" ? PreviewDeinterlace::Bob : d == "blend" ? PreviewDeinterlace::Blend : PreviewDeinterlace::Weave);
     left->addWidget(m_preview, 1);
-    m_caption = new CaptionReadout(central);
+    m_caption = new CaptionReadout(leftBox);
     left->addWidget(m_caption);
-    mid->addLayout(left, 1);
 
-    m_side = panel("sidePanel", central);
-    m_side->setFixedWidth(300);
+    m_side = panel("sidePanel", m_split);
     auto* form = new QFormLayout(m_side);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     form->setLabelAlignment(Qt::AlignRight);
     auto label = [&](const QString& t) {
         auto* l = new QLabel(t, m_side);
@@ -249,7 +280,9 @@ void MainWindow::buildUi() {
     m_codec = new QComboBox(m_side);
     for (QComboBox* c : {m_device, m_profileBox, m_input, m_standard, m_format, m_audio, m_sync, m_codec}) {
         c->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-        c->setMinimumContentsLength(12);
+        c->setMinimumContentsLength(18);
+        // Long entries still fit in the popup; the tooltip shows the full current one.
+        connect(c, &QComboBox::currentTextChanged, c, [c](const QString& t) { c->setToolTip(t); });
     }
     m_dest = new QLabel(m_side);
     m_dest->setWordWrap(true);
@@ -269,13 +302,21 @@ void MainWindow::buildUi() {
     auto* dr = new QHBoxLayout(destRow);
     dr->setContentsMargins(0, 0, 0, 0);
     dr->addWidget(m_dest, 1);
-    auto* destBtn = new QPushButton(tr("..."), destRow);
-    destBtn->setFixedWidth(32);
+    auto* destBtn = new QPushButton(tr("Change..."), destRow);
+    destBtn->setToolTip(tr("Output folder, container and audio format"));
+    destBtn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     connect(destBtn, &QPushButton::clicked, this, &MainWindow::openOutput);
-    dr->addWidget(destBtn);
+    dr->addWidget(destBtn, 0, Qt::AlignTop);
     form->addRow(label(tr("Destination")), destRow);
-    mid->addWidget(m_side);
-    v->addLayout(mid, 1);
+
+    // Never narrower than the form needs at the current font; start at its preferred width.
+    m_side->setMinimumWidth(m_side->minimumSizeHint().width());
+    m_split->addWidget(leftBox);
+    m_split->addWidget(m_side);
+    m_split->setStretchFactor(0, 1);
+    m_split->setStretchFactor(1, 0);
+    m_split->setSizes({4 * m_side->sizeHint().width(), m_side->sizeHint().width()});
+    v->addWidget(m_split, 1);
 
     auto* bottom = panel("bottomPanel", central);
     auto* bh = new QHBoxLayout(bottom);
@@ -674,6 +715,11 @@ void MainWindow::closeEvent(QCloseEvent* e) {
     m_statsTimer.stop();
     m_meterTimer.stop();
     m_ctl->session().close();
+    {
+        QSettings st(ProfileStore::appSettingsPath(), QSettings::IniFormat);
+        st.setValue("ui/geometry", saveGeometry());
+        st.setValue("ui/splitter", m_split->saveState());
+    }
     e->accept();
 }
 

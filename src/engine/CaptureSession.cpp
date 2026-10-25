@@ -607,6 +607,7 @@ void CaptureSession::writeJsonSidecar(const CaptureSummary& s) {
     j.integer("inserted", (long long)s.sync.inserted);
     j.integer("dropped", (long long)s.sync.dropped);
     j.integer("driver_drops", (long long)s.sync.driverDrops);
+    j.num("video_timestamp_jitter_ms", s.sync.tsJitterMs);
     j.integer("buffer_overflow", (long long)s.sync.ringDrops);
     j.integer("error_frames", (long long)s.sync.errorFrames);
     j.integer("audio_frames_in", (long long)s.sync.audioIn);

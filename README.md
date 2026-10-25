@@ -29,20 +29,19 @@ Files land in `~/Videos/PingDub/` as `YYYY-MM-DD_HHMMSS_<label>.mkv` with sideca
 
 ## GV-USB2 driver
 
-The I-O Data GV-USB2 is the device I capture with. Its driver is not in the mainline kernel, so you build it against your running kernel. There is no DKMS here.
+The I-O Data GV-USB2 is the device I capture with. Its driver is not in the mainline kernel, so it builds against your running kernel. I maintain it at [NullAngst/GV-USB2-Driver](https://github.com/NullAngst/GV-USB2-Driver), and its scripts handle the build and the module install.
 
 **REBUILD THE MODULE AFTER EVERY KERNEL UPDATE.** If you skip this, the device shows up with no driver after the next reboot and PingDub tells you exactly that.
 
-1. `sudo apt install build-essential linux-headers-$(uname -r) git`, since the module builds against your running kernel.
-2. Clone the driver and `cd` into it. Try upstream first: `git clone https://github.com/Isaac-Lozano/GV-USB2-Driver`. If it does not build on your kernel, try the fork: `git clone https://github.com/jkl1337/GV-USB2-Driver`. Neither is confirmed on current kernels yet, so expect build errors on new releases.
-3. `make`
-4. `sudo mkdir -p /lib/modules/$(uname -r)/extra && sudo cp *.ko /lib/modules/$(uname -r)/extra/`
-5. `sudo depmod -a`
-6. Check `cat /proc/asound/cards`, then set the sound module's ALSA index to one past the highest card number (N below), since the module has a card index quirk: `printf 'options gvusb2-sound index=N\n' | sudo tee /etc/modprobe.d/gvusb2.conf`
-7. Load on boot: `printf 'gvusb2-video\ngvusb2-sound\n' | sudo tee /etc/modules-load.d/gvusb2.conf`
-8. `sudo modprobe gvusb2-video && sudo modprobe gvusb2-sound`, then plug in the device. **Tools > Diagnostics** should show it bound to both drivers.
+1. `git clone https://github.com/NullAngst/GV-USB2-Driver.git`
+2. `cd GV-USB2-Driver`
+3. `scripts/install.sh`, or `scripts/install.sh -d` if you don't have kernel headers and a compiler yet, since that installs them first.
+4. Plug in the device. **Tools > Diagnostics** should show it bound to both the video and the sound driver.
+5. After every kernel update: `scripts/update.sh` in the same folder.
 
-I use apt, so in my case that is step 1 as written. It depends on your system: swap apt for whichever package manager you use; the header package name varies (`kernel-devel` on openSUSE and Fedora, `linux-headers` on Arch).
+I use apt, so in my case `install.sh -d` pulls `linux-headers-$(uname -r)`. It depends on your system: the script knows the header package for Fedora, Arch and openSUSE too.
+
+Use a driver build from 2026-10-24 or later. Earlier builds stamped each frame with the time a 32 ms USB transfer finished instead of when the frame ended, and didn't report frames they lost. PingDub copes with the coarse timestamps (see Sync below), but the newer driver gives it exact ones.
 
 The GV-USB2 is a Japanese device, and NTSC-J has no 7.5 IRE setup. A US tape captured as NTSC-J has lifted blacks. PingDub defaults to NTSC-M unless you pick otherwise.
 
@@ -156,9 +155,9 @@ Video and audio run on different clocks. The video decoder locks to the tape's s
 | Audio master | Frames repeated or dropped to match the audio | Bit-exact | Music sources where you want the exact samples |
 | No correction | As delivered | As delivered | Diagnosing a device; the streams will drift |
 
-Video master measures the A/V offset on the shared monotonic clock and steers a libsoxr variable-rate resampler with a slow loop (about 30 seconds), clamped to plus or minus 0.5%, so timestamp jitter never reaches the pitch. If the ratio hits the clamp, something is wrong (wrong audio device, broken source) and PingDub warns. Gaps in the driver's sequence numbers or timestamps get repeats of the last good frame; when the driver stops delivering altogether (blank tape, signal loss), PingDub keeps filling at the nominal rate so audio stays aligned. Overruns on the audio side are filled with exactly as much silence as was lost.
+Video master measures the A/V offset on the shared monotonic clock and steers a libsoxr variable-rate resampler with a slow loop (about 30 seconds), clamped to plus or minus 0.5%, so timestamp jitter never reaches the pitch. If the ratio hits the clamp, something is wrong (wrong audio device, broken source) and PingDub warns. Gaps in the driver's sequence numbers or timestamps get repeats of the last good frame. Timestamps are judged against the whole timeline, with the driver's timestamp jitter learned as it goes, so a driver that stamps frames in coarse steps (a USB transfer at a time) does not produce false gaps; when the driver stops delivering altogether (blank tape, signal loss), PingDub keeps filling at the nominal rate so audio stays aligned. Overruns on the audio side are filled with exactly as much silence as was lost.
 
-The test suite runs six simulated hours at +100 and -100 ppm with timestamp jitter, driver drops, a signal loss and audio xruns. A tone placed one minute before the end lands within 0.1 ms of where it belongs, and every injected fault is counted exactly once.
+The test suite runs six simulated hours at +100 and -100 ppm with timestamp jitter, driver drops, a signal loss and audio xruns. A tone placed one minute before the end lands within 0.1 ms of where it belongs, and every injected fault is counted exactly once. A separate case feeds ten minutes of frames stamped on a 32 ms USB transfer grid, like older GV-USB2 driver builds, and checks that only the frames actually lost are inserted.
 
 ## Reliability
 
@@ -191,13 +190,13 @@ sudo apt install build-essential cmake ninja-build pkg-config qt6-base-dev libqt
 4. `./build/pingdub --self-test` runs a real 10-second capture through test-pattern devices and checks the file.
 5. `./build/pingdub` to run it. `PINGDUB_FAKE_DEVICES=1 ./build/pingdub` adds a test-pattern device if you want to try the UI with no hardware.
 
-To build the AppImage the same way CI does: `packaging/build-appimage.sh`. It downloads the latest Qt 6 with aqtinstall and builds the latest FFmpeg, libsoxr and zvbi from source. Add `USE_SYSTEM_QT=1` to use your distro's Qt instead.
+To build the AppImage the same way CI does: `bash packaging/build-appimage.sh`. It downloads the latest Qt 6 with aqtinstall and builds the latest FFmpeg, libsoxr and zvbi from source. The latest CMake and aqtinstall go into a Python venv under `build-appimage/tools`, since current Qt needs a newer CMake than Ubuntu 22.04 ships, so you also need `python3-venv`. Add `USE_SYSTEM_QT=1` to use your distro's Qt instead.
 
 ### CI
 
 `.github/workflows/build.yml` builds `PingDub-x86_64.AppImage` inside an `ubuntu:22.04` container on every push, runs the tests and a smoke test of the AppImage, uploads it with its `.zsync` as a workflow artifact, and publishes both to a Release on every `v*` tag.
 
-Qt, FFmpeg, libsoxr, zvbi, linuxdeploy and appimagetool are not pinned: each build takes the latest release. A new upstream release can break a build; when it does, the fix is a code change and the workflow log shows the cause. The GitHub Actions themselves are referenced by major version, since there is no other way to name them.
+Qt, CMake, FFmpeg, libsoxr, zvbi, linuxdeploy and appimagetool are not pinned: each build takes the latest release. A new upstream release can break a build; when it does, the fix is a code change and the workflow log shows the cause. The GitHub Actions themselves are referenced by major version, since there is no other way to name them.
 
 The build fails if `libasound`, `libudev`, `libGL`, `libEGL`, `libdbus-1` or `libc` end up inside the AppImage. A bundled alsa-lib cannot load the host's ALSA plugins, which breaks the pipewire PCM and any `.asoundrc`.
 
@@ -214,7 +213,7 @@ The build fails if `libasound`, `libudev`, `libGL`, `libEGL`, `libdbus-1` or `li
 
 ## Known limits
 
-- I have not run the hardware acceptance tests (2-hour GV-USB2 capture, HandBrake detection, unplug and kill -9 on real hardware) from this build environment; CI has no capture hardware. Those need a GV-USB2 driver that builds on your kernel, and none is confirmed on current kernels yet.
+- The GV-USB2 captures on real hardware (S-Video, NTSC). The full acceptance tests (2-hour capture, HandBrake detection, unplug and kill -9 mid-capture) have not been run yet; CI has no capture hardware.
 - The Somagic and DeckLink backends compile, pass their unit tests, and stay hidden when their hardware or library is absent, but nobody has run them on real hardware. They are marked experimental in the UI.
 - The HM12 detiler follows the documented ivtv/cx18 tile layout; it has not been checked against a real cx18 card.
 - Preview uses QOpenGLWidget rather than QRhiWidget. It runs on every Qt 6 release and needs no shader baking step in the build; the YUV to RGB work is still done in a shader.

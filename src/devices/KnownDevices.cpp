@@ -7,10 +7,13 @@ const std::vector<KnownDevice>& knownDevices() {
     using B = KnownDevice::Bus;
     static const std::vector<KnownDevice> list = {
         {B::USB, 0x04bb, 0x0532, "I-O Data GV-USB2", "", "gvusb2-video,gvusb2_video,gvusb2-sound,gvusb2_sound",
-         false, "https://github.com/Isaac-Lozano/GV-USB2-Driver",
-         "Out-of-tree driver: build gvusb2-video and gvusb2-sound against your kernel (README, section 'GV-USB2 driver'). "
-         "Rebuild after every kernel update. If upstream does not build on your kernel, try the jkl1337 fork: "
-         "https://github.com/jkl1337/GV-USB2-Driver",
+         false, "https://github.com/NullAngst/GV-USB2-Driver",
+         "Out-of-tree driver: clone it and run scripts/install.sh (README, section 'GV-USB2 driver'). "
+         "Run scripts/update.sh after every kernel update.",
+         {0, 1}},
+        {B::USB, 0x0fd9, 0x0037, "Elgato Video Capture V2", "CX23102", "cx231xx", true, "",
+         "Mainline cx231xx driver. Composite works; S-Video showed color noise on the stock driver in testing "
+         "while the same chain was clean on Windows, so use composite on this device for now.",
          {0, 1}},
         {B::USB, 0x1b71, 0x3002, "EasyCap (Fushicai USBTV007)", "USBTV007", "usbtv", true, "https://www.kernel.org/doc/html/latest/admin-guide/media/usbtv.html",
          "Mainline usbtv driver. It also provides the ALSA card; old guides saying there is no audio are out of date.", {0, 1}},

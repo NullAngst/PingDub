@@ -26,6 +26,77 @@ const char* syncEventName(SyncEvent::Type t) {
 
 // ---------------------------------------------------------------------------
 
+void FrameClock::anchor(int64_t tsNs, int64_t slot) {
+    m_anchored = true;
+    m_anchorTs = tsNs;
+    m_anchorSlot = slot;
+    m_window.clear();
+}
+
+FrameClock::Verdict FrameClock::judge(int64_t tsNs, int64_t nextSlot) {
+    Verdict v;
+    m_pending = true;
+    m_lastTs = tsNs;
+    m_lastSlot = nextSlot;
+    if (!m_anchored) {
+        anchor(tsNs, nextSlot);
+        m_lastLate = 0.0;
+        return v;
+    }
+    const double late = double(tsNs - m_anchorTs) / m_interval - double(nextSlot - m_anchorSlot);
+    m_lastLate = late;
+    if (m_window.empty()) return v;
+    double lo = m_window.front(), hi = lo;
+    for (double x : m_window) {
+        lo = std::min(lo, x);
+        hi = std::max(hi, x);
+    }
+    const double d = late - lo;
+    if (d < -0.5) {
+        v.early = true;
+        return v;
+    }
+    if (m_seen < uint64_t(kWarmup)) {
+        // Still learning the jitter: only a gap no jitter could explain counts.
+        if (d >= 2.5) v.missing = uint64_t(std::floor(d + 0.5));
+        return v;
+    }
+    const double j = std::min(std::max(m_jitter, hi - lo), kMaxJitter);
+    const double m = std::floor(d + 0.5 - j / 2.0);
+    v.missing = m > 0 ? uint64_t(m) : 0;
+    return v;
+}
+
+void FrameClock::commit(uint64_t inserted) {
+    if (!m_pending) return;
+    m_pending = false;
+    ++m_seen;
+    const double corrected = m_lastLate - double(inserted);
+    if (!m_window.empty()) {
+        double lo = m_window.front();
+        for (double x : m_window) lo = std::min(lo, x);
+        // Ahead of the timeline: a fill or insert overshot and cannot be taken
+        // back, so measure from here on. The learned jitter is kept.
+        if (corrected - lo < -0.5) {
+            anchor(m_lastTs, m_lastSlot + int64_t(inserted));
+            m_window.push_back(0.0);
+            return;
+        }
+    }
+    m_window.push_back(corrected);
+    while (m_window.size() > size_t(kWindow)) m_window.pop_front();
+    double lo = m_window.front(), hi = lo;
+    for (double x : m_window) {
+        lo = std::min(lo, x);
+        hi = std::max(hi, x);
+    }
+    // Rare jitter (one slow transfer a minute) is remembered for about 30 s.
+    const double decay = std::exp(-1.0 / 900.0);
+    m_jitter = std::max(hi - lo, m_jitter * decay);
+}
+
+// ---------------------------------------------------------------------------
+
 std::vector<int64_t> StallWatchdog::poll(int64_t nowNs) {
     std::vector<int64_t> out;
     if (!m_have) return out;
@@ -63,6 +134,7 @@ uint32_t AudioGapDetector::check(int64_t chunkTsNs, uint32_t frames, bool xrun) 
 
 SyncEngine::SyncEngine(const SyncConfig& cfg, SyncSink* sink) : m_cfg(cfg), m_sink(sink) {
     m_interval = 1e9 * double(cfg.fps.den) / double(cfg.fps.num);
+    m_clock.reset(m_interval);
     if (m_cfg.haveAudio && m_cfg.mode == SyncMode::VideoMaster) {
         soxr_error_t err = nullptr;
         soxr_io_spec_t io = soxr_io_spec(SOXR_FLOAT32_I, SOXR_FLOAT32_I);
@@ -142,6 +214,7 @@ void SyncEngine::event(SyncEvent::Type t, uint64_t count, const std::string& det
 }
 
 void SyncEngine::publish() {
+    m_c.tsJitterMs = m_clock.jitterFrames() * m_interval / 1e6;
     std::lock_guard<std::mutex> lk(m_pubMutex);
     m_pub = m_c;
 }
@@ -276,12 +349,10 @@ void SyncEngine::pushVideo(const VideoFrame& f) {
     }
 
     const uint64_t missingSeq = seqGap > m_fillsSinceReal ? seqGap - m_fillsSinceReal : 0;
-    const double dt = double(f.tsNs - m_lastEventTs);
-    uint64_t missingTs = 0;
-    if (dt > 1.5 * m_interval) missingTs = uint64_t(std::llround(dt / m_interval)) - 1;
-    if (m_fillsSinceReal && dt < 0.5 * m_interval)
+    const FrameClock::Verdict verdict = m_clock.judge(f.tsNs, m_nextSlot);
+    if (m_fillsSinceReal && verdict.early)
         event(SyncEvent::Overfill, 1, "frame arrived inside a filled gap");
-    const uint64_t missing = std::max(missingSeq, missingTs);
+    const uint64_t missing = std::max(missingSeq, verdict.missing);
 
     m_lastSeq = f.seq;
     m_fillsSinceReal = 0;
@@ -299,13 +370,16 @@ void SyncEngine::pushVideo(const VideoFrame& f) {
             break;
         }
         [[fallthrough]];
-    case SyncMode::VideoMaster:
+    case SyncMode::VideoMaster: {
+        const int64_t before = m_nextSlot;
         emitInserted(missing, "gap in video");
+        m_clock.commit(uint64_t(m_nextSlot - before));
         m_lastReal = f;
         ++m_c.realFrames;
         emitVideo(f, false);
         m_lastEventTs = f.tsNs;
         break;
+    }
     }
     publish();
 }

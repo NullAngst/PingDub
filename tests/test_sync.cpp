@@ -309,6 +309,44 @@ TEST_CASE("field-counting drivers: sequence stride of 2") {
     CHECK_EQ(c.driverDrops, 0u);
 }
 
+TEST_CASE("coarse USB timestamps: no false inserts, real losses still counted") {
+    // The GV-USB2 driver timestamps a frame when the 32 ms isochronous
+    // transfer holding its end completes, and its sequence numbers skip
+    // nothing when it loses a frame. Ten minutes of NTSC, a few frames lost.
+    for (bool losses : {false, true}) {
+        SyncConfig cfg;
+        cfg.haveAudio = false;
+        struct S : SyncSink {
+            void syncVideo(const VideoFrame&, int64_t, bool) override {}
+            void syncAudio(const int32_t*, size_t) override {}
+        } sink;
+        SyncEngine e(cfg, &sink);
+        const double iv = e.intervalNs();
+        const double urb = 32e6;
+        const double phase = 7.3e6;
+        std::mt19937_64 rng(7);
+        std::uniform_real_distribution<double> jit(0.0, 0.4e6);  // callback scheduling
+        const uint64_t total = 18000;
+        std::set<uint64_t> lost;
+        if (losses) lost = {500, 4000, 4001, 9000, 15555};
+        uint32_t seq = 0;
+        for (uint64_t k = 0; k < total; ++k) {
+            if (lost.count(k)) continue;
+            const double end = 1e12 + double(k + 1) * iv;  // frame complete
+            const double done = std::ceil((end - phase) / urb) * urb + phase + jit(rng);
+            VideoFrame f;
+            f.data = std::make_shared<Bytes>(1);
+            f.seq = seq++;
+            f.tsNs = int64_t(done);
+            e.pushVideo(f);
+        }
+        const auto c = e.counters();
+        CHECK_EQ(c.inserted, uint64_t(lost.size()));
+        CHECK_EQ(c.framesOut, total - (lost.count(total - 1) ? 1 : 0));
+        CHECK(c.tsJitterMs > 25.0 && c.tsJitterMs < 33.0);
+    }
+}
+
 TEST_CASE("6 hours, audio +100 ppm, video master") {
     const SimResult r = simulate(6.0, +100.0, SyncMode::VideoMaster, true);
     std::printf("  frames=%llu inserted=%llu driverDrops=%llu xruns=%llu drift=%.1fppm offset=%.2fms tone=%.2fms end=%.3f frames\n",

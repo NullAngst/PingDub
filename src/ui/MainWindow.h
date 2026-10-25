@@ -16,6 +16,7 @@ class QPushButton;
 class QShortcut;
 class QFrame;
 class QAction;
+class QSplitter;
 
 namespace pd {
 
@@ -38,6 +39,7 @@ protected:
 private:
     void buildMenus();
     void buildUi();
+    void restoreLayout();
     void populateDevices();
     void populateSidePanel();
     void updateBanner();
@@ -72,6 +74,7 @@ private:
     QLabel* m_bannerText = nullptr;
     QPushButton* m_bannerButton = nullptr;
     QFrame* m_side = nullptr;
+    QSplitter* m_split = nullptr;
     QComboBox* m_device = nullptr;
     QComboBox* m_profileBox = nullptr;
     QComboBox* m_input = nullptr;

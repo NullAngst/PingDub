@@ -59,6 +59,7 @@ struct SyncCounters {
     double avOffsetMs = 0.0;    // + means audio would play late
     double driftPpm = 0.0;      // + means the audio clock runs fast
     double ratio = 1.0;         // current resampler input/output ratio
+    double tsJitterMs = 0.0;    // learned spread of video timestamps
     bool clampHit = false;
     int64_t t0Ns = 0;
     bool started = false;
@@ -129,6 +130,58 @@ private:
     bool m_have = false;
 };
 
+// Decides how many frames are missing before a real frame, from its
+// timestamp. Drivers timestamp frames when a USB transfer completes, so on
+// some devices timestamps arrive in coarse steps: the GV-USB2 completes one
+// 32 ms transfer at a time, which makes the gap between two NTSC frames read
+// as 32 ms most of the time and 64 ms about once a second. Comparing each
+// gap with 1.5 frames turns every 64 ms step into a false missing frame.
+//
+// Instead each frame's lateness is measured against the timeline as a whole
+// (where it arrived versus the slot it would take), the spread of lateness
+// over recent frames is learned as the timestamp jitter, and a frame counts
+// as missing only when lateness exceeds what that jitter explains. With
+// steady timestamps this is the same as rounding the gap; with coarse ones
+// it stops inventing frames.
+class FrameClock {
+public:
+    void reset(double intervalNs) {
+        m_interval = intervalNs;
+        m_anchored = false;
+        m_window.clear();
+        m_jitter = 0.0;
+        m_seen = 0;
+    }
+    struct Verdict {
+        uint64_t missing = 0;  // frames the timestamps say are missing
+        bool early = false;    // frame arrived before its slot (an earlier fill or insert overshot)
+    };
+    // Judge a real frame at `tsNs` that would take slot `nextSlot` with no inserts.
+    Verdict judge(int64_t tsNs, int64_t nextSlot);
+    // Record how many slots were inserted before the frame judged last.
+    void commit(uint64_t inserted);
+    double jitterFrames() const { return m_jitter; }
+
+    static constexpr int kWindow = 90;       // frames of lateness kept (3 s of NTSC)
+    static constexpr int kWarmup = 60;       // frames before the jitter estimate is trusted
+    static constexpr double kMaxJitter = 0.98;
+
+private:
+    void anchor(int64_t tsNs, int64_t slot);
+    double m_interval = 33366666.7;
+    bool m_anchored = false;
+    int64_t m_anchorTs = 0;
+    int64_t m_anchorSlot = 0;
+    std::deque<double> m_window;  // lateness in frames, after inserts
+    double m_jitter = 0.0;        // learned spread, decays slowly
+    uint64_t m_seen = 0;
+    // pending state between judge() and commit()
+    double m_lastLate = 0.0;
+    int64_t m_lastTs = 0;
+    int64_t m_lastSlot = 0;
+    bool m_pending = false;
+};
+
 class SyncEngine {
 public:
     SyncEngine(const SyncConfig& cfg, SyncSink* sink);
@@ -172,6 +225,7 @@ private:
     int64_t m_t0 = 0;
     int64_t m_nextSlot = 0;
     int64_t m_lastEventTs = 0;
+    FrameClock m_clock;
     uint32_t m_lastSeq = 0;
     uint32_t m_seqStride = 1;
     int m_strideProbe = 0;
