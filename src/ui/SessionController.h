@@ -28,7 +28,15 @@ struct AppSettings {
     QString lastDevice;
     QString lastLabel;
     bool confirmStop = true;
+    bool notifyAutoStop = true;      // desktop notification when a capture stops on its own
+    double levelThresholdPct = 0.5;  // crush/clip/chroma warning threshold
+    double levelSeconds = 3.0;       // ...held this long
+    int chromaLimit = 112;           // chroma distance from neutral counted as past the limit
+    QString scope = "histogram";     // histogram, waveform, vectorscope
+    bool parade = false;
+    QString lastCaptureFolder;
 
+    AnalysisSettings analysis() const;
     void load();
     void save() const;
 };
@@ -68,6 +76,10 @@ public:
     QStringList audioChoices() const;      // "auto", "none", ALSA pcms
     QString audioChoiceLabel(const QString& pcm) const;
     void applyStopConditions(const StopConditions& s);
+    void applyAnalysisSettings();
+    // Writes the device's current control values into the profile file, so
+    // values from Set Levels come back with the device and input.
+    bool saveControlsToProfile();
 
 signals:
     void deviceChanged();

@@ -194,9 +194,10 @@ void Muxer::writePacket(AVPacket* pkt, int stream) {
     if (!m_queue->push(std::move(c), bytes)) av_packet_free(&pkt);
 }
 
-void Muxer::endSegment() {
+void Muxer::endSegment(std::vector<MuxChapter> chapters) {
     Cmd c;
     c.type = CmdType::End;
+    c.chapters = std::move(chapters);
     m_queue->push(std::move(c), 1);
 }
 
@@ -234,7 +235,7 @@ void Muxer::run() {
         switch (c.type) {
         case CmdType::Begin: doBegin(*c.spec); break;
         case CmdType::Packet: doPacket(c.pkt, c.stream); break;
-        case CmdType::End: doEnd(); break;
+        case CmdType::End: doEnd(c.chapters); break;
         }
         c = Cmd{};
     }
@@ -317,8 +318,27 @@ void Muxer::doPacket(AVPacket* pkt, int stream) {
     av_packet_free(&pkt);
 }
 
-void Muxer::doEnd() {
+void Muxer::doEnd(const std::vector<MuxChapter>& chapters) {
     if (!m_fmt) return;
+    if (m_headerWritten && !chapters.empty() && m_cur && m_cur->container == Container::MKV && !m_encTb.empty()) {
+        for (size_t i = 0; i < chapters.size(); ++i) {
+            AVChapter* ch = static_cast<AVChapter*>(av_mallocz(sizeof(AVChapter)));
+            if (!ch) break;
+            ch->id = int64_t(i + 1);
+            ch->time_base = m_encTb[0];
+            ch->start = chapters[i].start;
+            ch->end = chapters[i].end;
+            av_dict_set(&ch->metadata, "title", chapters[i].title.c_str(), 0);
+            AVChapter** grown = static_cast<AVChapter**>(av_realloc_array(m_fmt->chapters, m_fmt->nb_chapters + 1, sizeof(AVChapter*)));
+            if (!grown) {
+                av_dict_free(&ch->metadata);
+                av_free(ch);
+                break;
+            }
+            m_fmt->chapters = grown;
+            m_fmt->chapters[m_fmt->nb_chapters++] = ch;
+        }
+    }
     if (m_headerWritten) {
         const int r = av_write_trailer(m_fmt);
         if (r < 0 && !m_failed) fail("cannot finalize file: " + avErr(r));

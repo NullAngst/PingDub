@@ -87,12 +87,14 @@ fetch_tag https://github.com/FFmpeg/FFmpeg.git "$FF_TAG" "$SRC/ffmpeg"
 (
     cd "$SRC/ffmpeg"
     # LGPL build with only what PingDub uses. ffprobe is built for the tests.
+    # The MJPEG encoder writes the contact sheets; the framemd5 muxer is the
+    # reference the checksum test compares the .framemd5 sidecars against.
     ./configure --prefix="$PREFIX" --enable-shared --disable-static --disable-everything \
         --disable-programs --enable-ffprobe --disable-doc --disable-autodetect --disable-network --disable-debug \
         --disable-avdevice --disable-avfilter --disable-swscale --disable-swresample \
-        --enable-encoder=ffv1,utvideo,ffvhuff,huffyuv,rawvideo,pcm_s16le,pcm_s24le,pcm_s32le,flac \
+        --enable-encoder=ffv1,utvideo,ffvhuff,huffyuv,rawvideo,pcm_s16le,pcm_s24le,pcm_s32le,flac,mjpeg \
         --enable-decoder=ffv1,utvideo,ffvhuff,huffyuv,rawvideo,pcm_s16le,pcm_s24le,pcm_s32le,flac,mjpeg \
-        --enable-muxer=matroska,avi --enable-demuxer=matroska,avi --enable-protocol=file
+        --enable-muxer=matroska,avi,framemd5 --enable-demuxer=matroska,avi --enable-protocol=file
     make -j"$JOBS"
     make install
 )
@@ -162,7 +164,7 @@ DESTDIR=$APPDIR cmake --install "$BUILD"
 # Wayland and X11 platform plugins both go in. The list comes from what this Qt
 # ships: Qt 6.10 merged libqwayland-egl.so and libqwayland-generic.so into one
 # libqwayland.so, and older Qt still has the split pair.
-PLATFORMS=$(cd "$QT_PLUGINS/platforms" && ls libqwayland*.so libqxcb.so | paste -sd ';')
+PLATFORMS=$(cd "$QT_PLUGINS/platforms" && printf '%s\n' libqwayland*.so libqxcb.so | paste -sd ';')
 printf 'Platform plugins: %s\n' "$PLATFORMS"
 export EXTRA_PLATFORM_PLUGINS=$PLATFORMS
 export EXTRA_QT_MODULES="svg"

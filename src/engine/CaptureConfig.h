@@ -23,13 +23,16 @@ struct OutputSettings {
     Container container = Container::MKV;
     VideoCodec vcodec = VideoCodec::FFV1;
     AudioCodec acodec = AudioCodec::PCM;
-    std::string folder;               // default ~/Videos/PingDub
+    std::string folder;               // default ~/Videos/PingDub; may hold {title} and other tokens
     std::string overflowFolder;       // empty: no spill
     uint64_t overflowFreeBytes = 10ull << 30;  // switch when the current drive drops below this
     std::string label;                // tape label, goes into file name and tags
     uint64_t segmentBytes = 0;        // 0: no size segmenting
     double segmentSeconds = 0;        // 0: no duration segmenting
     int threads = 0;                  // 0: all cores
+    int chapterIntervalMin = 0;       // 0: off, else 5, 10, 15 or 30
+    bool chapterBoundaries = false;   // a chapter at every recording boundary
+    double contactSheetSec = 30;      // 0: no contact sheet
 };
 
 struct StopConditions {

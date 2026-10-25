@@ -39,6 +39,11 @@ public:
     bool encode(const VideoFrame& f, int64_t pts, std::vector<AVPacket*>& out, std::string& err);
     bool flush(std::vector<AVPacket*>& out);
     std::string description() const { return m_desc; }
+    // MD5 of each frame's raw picture before encoding, for the .framemd5 sidecar.
+    void setFrameHashes(bool on) { m_hash = on; }
+    // The hash of the frame passed to the last encode(); false for MJPEG passthrough.
+    bool lastFrameHash(uint8_t md5[16], int& size) const;
+    bool passthrough() const { return m_passthrough; }
 
 private:
     bool fillFrame(AVFrame* fr, const VideoFrame& f);
@@ -55,6 +60,10 @@ private:
     const void* m_lastSrc = reinterpret_cast<const void*>(-1);
     AVPacket* m_lastPkt = nullptr;
     std::string m_desc;
+    bool m_hash = false;
+    bool m_hashValid = false;
+    uint8_t m_md5[16] = {};
+    int m_md5Size = 0;
 };
 
 class AudioEncoder {

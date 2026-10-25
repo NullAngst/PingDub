@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "Encoder.h"
 
+#include "Checksums.h"
 #include "PixelConvert.h"
 
 #include <algorithm>
@@ -357,9 +358,17 @@ bool VideoEncoder::drain(std::vector<AVPacket*>& out, int64_t pts) {
     }
 }
 
+bool VideoEncoder::lastFrameHash(uint8_t md5[16], int& size) const {
+    if (!m_hashValid) return false;
+    std::memcpy(md5, m_md5, 16);
+    size = m_md5Size;
+    return true;
+}
+
 bool VideoEncoder::encode(const VideoFrame& f, int64_t pts, std::vector<AVPacket*>& out, std::string& err) {
     const void* key = f.data ? static_cast<const void*>(f.data.get()) : nullptr;
     if (m_lastPkt && key == m_lastSrc) {
+        // Same picture as the last frame: its hash still holds.
         AVPacket* pkt = av_packet_clone(m_lastPkt);
         pkt->pts = pkt->dts = pts;
         pkt->duration = 1;
@@ -367,6 +376,7 @@ bool VideoEncoder::encode(const VideoFrame& f, int64_t pts, std::vector<AVPacket
         return true;
     }
     if (m_passthrough) {
+        m_hashValid = false;
         if (!f.data) {
             // No black JPEG to hand: repeat the last one, or skip until the first.
             if (!m_lastPkt) return true;
@@ -408,6 +418,7 @@ bool VideoEncoder::encode(const VideoFrame& f, int64_t pts, std::vector<AVPacket
         return false;
     }
     fillFrame(fr, f);
+    m_hashValid = m_hash && frameMd5(fr, m_md5, m_md5Size);
     fr->pts = pts;
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(58, 29, 100)
     fr->duration = 1;

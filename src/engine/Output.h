@@ -6,6 +6,8 @@
 #pragma once
 
 #include "CaptureConfig.h"
+#include "Chapters.h"
+#include "Checksums.h"
 #include "Encoder.h"
 #include "EventLog.h"
 #include "Muxer.h"
@@ -13,6 +15,8 @@
 #include "SyncEngine.h"
 
 #include <atomic>
+#include <functional>
+#include <mutex>
 #include <map>
 #include <memory>
 #include <string>
@@ -30,6 +34,18 @@ struct OutputPlan {
     std::string stem;     // file name without extension or part suffix
     std::map<std::string, std::string> tags;  // written as-is
     std::vector<std::string> deferredTags;     // filled in when the capture ends
+    bool frameHashes = true;                   // write a .framemd5 next to each file
+    // Chapters for the segment [start, end) when it closes; `final` for the last one.
+    std::function<std::vector<Chapter>(int64_t start, int64_t end, bool final)> chapters;
+};
+
+struct SegmentRecord {
+    std::string path;
+    int64_t startSlot = 0;
+    int64_t frames = 0;
+    std::string frameMd5;          // sidecar path, empty if none
+    std::vector<Chapter> chapters; // relative to the segment start
+    std::string chaptersTxt;       // AVI: FFmpeg metadata sidecar
 };
 
 class OutputWriter : public SyncSink {
@@ -61,6 +77,8 @@ public:
     uint64_t framesEncoded() const { return m_framesEncoded.load(); }
     size_t queueBytes() const { return m_queue ? m_queue->bytes() : 0; }
     std::string extension() const { return m_plan.out.container == Container::AVI ? ".avi" : ".mkv"; }
+    // Every segment written, complete after close().
+    std::vector<SegmentRecord> segments() const;
 
 private:
     struct Item {
@@ -72,7 +90,7 @@ private:
     };
     void run();
     bool openSegment(int64_t startSlot, uint64_t startSample);
-    void closeSegment();
+    void closeSegment(bool final);
     std::string segmentPath(int index, bool overflow) const;
     bool needRoll(int64_t slot);
     void encodeVideo(const Item& it);
@@ -101,6 +119,12 @@ private:
     uint64_t m_rollSample = 0;
     std::vector<Item> m_heldVideo;
     std::vector<int32_t> m_heldAudio;
+
+    FrameMd5Writer m_md5;
+    int64_t m_segFrames = 0;
+    std::string m_segPath;
+    mutable std::mutex m_segMutex;
+    std::vector<SegmentRecord> m_segs;
 
     std::vector<AVPacket*> m_pkts;
     std::string m_vdesc, m_adesc;

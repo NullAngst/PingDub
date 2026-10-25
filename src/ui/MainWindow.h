@@ -17,6 +17,7 @@ class QShortcut;
 class QFrame;
 class QAction;
 class QSplitter;
+class QTabWidget;
 
 namespace pd {
 
@@ -26,6 +27,8 @@ class Histogram;
 class StatsStrip;
 class CaptionReadout;
 class DeviceScanner;
+class Scope;
+class LevelsPanel;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -61,6 +64,11 @@ private:
     void openDiagnostics();
     void openPreferences();
     void recover();
+    void verify(const QString& path = QString());
+    void openReport(const QString& path = QString());
+    void notifyAutoStop(const CaptureSummary& s);
+    void setScope(int index);
+    QString baseFolder() const;
     void saveProfileAs();
 
     DeviceScanner* m_scanner;
@@ -91,6 +99,14 @@ private:
     QShortcut* m_startKey = nullptr;
     QShortcut* m_stopKey = nullptr;
     QAction* m_pausePreview = nullptr;
+    QTabWidget* m_scopeTabs = nullptr;
+    Scope* m_wave = nullptr;
+    Scope* m_vector = nullptr;
+    LevelsPanel* m_levels = nullptr;
+    QAction* m_scopeActs[3] = {nullptr, nullptr, nullptr};
+    QAction* m_paradeAct = nullptr;
+    uint64_t m_scopeSerial = 0;
+    QString m_levelMsg;
     QTimer m_frameTimer, m_statsTimer, m_meterTimer, m_armTimer;
     TimedCapture m_armed;
     uint64_t m_previewSerial = 0;

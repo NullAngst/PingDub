@@ -11,6 +11,8 @@
 
 #include <linux/videodev2.h>
 
+#include <algorithm>
+
 namespace pd {
 
 QString ProfileStore::configDir() {
@@ -86,6 +88,9 @@ bool ProfileStore::save(const Profile& p) const {
     s.setValue("output/overflow_free_gb", qulonglong(p.output.overflowFreeBytes >> 30));
     s.setValue("output/segment_mb", qulonglong(p.output.segmentBytes >> 20));
     s.setValue("output/segment_minutes", p.output.segmentSeconds / 60.0);
+    s.setValue("output/chapter_interval_minutes", p.output.chapterIntervalMin);
+    s.setValue("output/chapter_boundaries", p.output.chapterBoundaries);
+    s.setValue("output/contact_sheet_seconds", p.output.contactSheetSec);
     s.sync();
     return s.status() == QSettings::NoError;
 }
@@ -124,6 +129,9 @@ bool ProfileStore::load(const QString& name, Profile& p) const {
     p.output.overflowFreeBytes = s.value("output/overflow_free_gb", 10).toULongLong() << 30;
     p.output.segmentBytes = s.value("output/segment_mb", 0).toULongLong() << 20;
     p.output.segmentSeconds = s.value("output/segment_minutes", 0).toDouble() * 60.0;
+    p.output.chapterIntervalMin = std::clamp(s.value("output/chapter_interval_minutes", 0).toInt(), 0, 240);
+    p.output.chapterBoundaries = s.value("output/chapter_boundaries", false).toBool();
+    p.output.contactSheetSec = std::clamp(s.value("output/contact_sheet_seconds", 30.0).toDouble(), 0.0, 3600.0);
     return true;
 }
 

@@ -165,6 +165,28 @@ JsonWriter& JsonWriter::strList(const std::string& key, const std::vector<std::s
     return *this;
 }
 
+JsonWriter& JsonWriter::beginArray(const std::string& key) {
+    sep();
+    if (!key.empty()) m_out += "\"" + escape(key) + "\": ";
+    m_out += "[";
+    m_first.push_back(true);
+    return *this;
+}
+
+JsonWriter& JsonWriter::endArray() {
+    const bool empty = m_first.back();
+    m_first.pop_back();
+    if (!empty) m_out += "\n" + std::string(m_first.size() * 2, ' ');
+    m_out += "]";
+    return *this;
+}
+
+JsonWriter& JsonWriter::intItem(long long v) {
+    sep();
+    m_out += std::to_string(v);
+    return *this;
+}
+
 bool writeTextFile(const std::string& path, const std::string& text) {
     FILE* f = std::fopen(path.c_str(), "w");
     if (!f) return false;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "CaptureSession.h"
 
+#include "Checksums.h"
 #include "Clock.h"
 #include "PixelConvert.h"
 #include "SysInfo.h"
@@ -10,6 +11,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <linux/videodev2.h>
+
+extern "C" {
+#include <libavformat/avformat.h>
+}
 
 namespace pd {
 
@@ -142,11 +149,13 @@ bool CaptureSession::open(std::unique_ptr<VideoBackend> video, std::unique_ptr<A
     m_vthread = std::thread([this] { videoLoop(); });
     if (m_audioPtr) m_athread = std::thread([this] { audioLoop(); });
     m_mthread = std::thread([this] { monitorLoop(); });
+    m_analysis.start(m_vfmt, cfg.analysis, [this](VideoFrame& f, uint64_t& serial) { return latestFrame(f, serial); });
     return true;
 }
 
 void CaptureSession::close() {
     if (m_capturing) stopCapture("session closed");
+    m_analysis.stop();
     m_run = false;
     if (m_vthread.joinable()) m_vthread.join();
     if (m_athread.joinable()) m_athread.join();
@@ -228,6 +237,7 @@ void CaptureSession::videoLoop() {
         }
         m_lastVideoArrival = now;
         m_lastRealArrival = now;
+        if (!m_lockedNow.load()) f.flags |= VF_NoLock;
         if (lumaOk && (n++ % 3) == 0 && f.data && f.size >= size_t(m_vfmt.bytesPerLine) * m_vfmt.height) {
             const LumaStats st = lumaStats(f.data->data(), m_vfmt.bytesPerLine, m_vfmt.width, m_vfmt.height, layout, 16);
             m_lumaStddev = std::sqrt(std::max(0.0, st.variance));
@@ -346,13 +356,22 @@ void CaptureSession::syncLoop() {
 // ---------------------------------------------------------------------------
 // capture
 
-std::vector<PreflightItem> CaptureSession::preflight(double plannedSeconds) {
+std::vector<PreflightItem> CaptureSession::preflight(double plannedSeconds, const std::string& label) {
     std::vector<PreflightItem> out;
-    const std::string folder = expandHome(m_cfg.output.folder.empty() ? "~/Videos/PingDub" : m_cfg.output.folder);
-    makeDirs(folder);
+    const std::string tmpl = folderTemplate();
+    std::string folder, terr;
+    TemplateValues tv = templateValues(label);
+    tv.startRealNs = realtimeNs();
+    if (!resolveFolderTemplate(tmpl, tv, folder, terr)) {
+        out.push_back({PreflightItem::Bad, "Output folder: " + terr + "."});
+        folder = templateBase(tmpl);
+    } else if (templateUsesToken(tmpl, "title") && cleanTemplateValue(label).empty()) {
+        out.push_back({PreflightItem::Warn, "The tape label is empty, so {title} in the output folder becomes \"Untitled\"."});
+    }
+    // The folder is created when the capture starts; until then its nearest existing parent holds the space.
     const double rate = estimatedBytesPerSecond(m_vfmt, m_afmt, m_audioPtr != nullptr, m_cfg.output.vcodec);
-    uint64_t freeB = freeBytes(folder);
-    if (!m_cfg.output.overflowFolder.empty()) freeB += freeBytes(expandHome(m_cfg.output.overflowFolder));
+    uint64_t freeB = freeBytes(nearestExistingDir(folder));
+    if (!m_cfg.output.overflowFolder.empty()) freeB += freeBytes(nearestExistingDir(templateBase(m_cfg.output.overflowFolder)));
     char buf[256];
     if (plannedSeconds > 0) {
         const double need = rate * plannedSeconds;
@@ -405,10 +424,21 @@ bool CaptureSession::startCapture(const std::string& label, std::string& err) {
     m_label = label;
     m_captureStartReal = realtimeNs();
     m_captureStartMono = monotonicNs();
-    const std::string folder = expandHome(m_cfg.output.folder.empty() ? "~/Videos/PingDub" : m_cfg.output.folder);
+    // The folder template is resolved once, here, so a capture never splits across folders.
+    TemplateValues tv = templateValues(label);
+    tv.startRealNs = m_captureStartReal;
+    std::string folder, terr;
+    if (!resolveFolderTemplate(folderTemplate(), tv, folder, terr)) {
+        err = "output folder: " + terr;
+        return false;
+    }
     if (!makeDirs(folder)) {
         err = "cannot create " + folder;
         return false;
+    }
+    {
+        std::lock_guard<std::mutex> fl(m_folderMutex);
+        m_folder = folder;
     }
     const std::string clean = sanitizeLabel(label);
     const std::string stem = fileStamp(m_captureStartReal) + (clean.empty() ? "" : "_" + clean);
@@ -416,7 +446,14 @@ bool CaptureSession::startCapture(const std::string& label, std::string& err) {
 
     OutputSettings outSet = m_cfg.output;
     if (outSet.container == Container::AVI && outSet.acodec == AudioCodec::FLAC) outSet.acodec = AudioCodec::PCM;
-    outSet.overflowFolder = outSet.overflowFolder.empty() ? "" : expandHome(outSet.overflowFolder);
+    if (!outSet.overflowFolder.empty()) {
+        std::string of;
+        if (!resolveFolderTemplate(outSet.overflowFolder, tv, of, terr)) {
+            err = "overflow folder: " + terr;
+            return false;
+        }
+        outSet.overflowFolder = of;
+    }
 
     m_log = std::make_unique<EventLog>();
     if (!m_log->open(m_basePath + ".log.csv", m_vfmt.fps)) {
@@ -459,6 +496,18 @@ bool CaptureSession::startCapture(const std::string& label, std::string& err) {
     plan.deferredTags = {"PINGDUB_CAPTURE_END",   "PINGDUB_FRAMES",       "PINGDUB_INSERTED",     "PINGDUB_DROPPED",
                          "PINGDUB_DRIVER_DROPS",  "PINGDUB_BUFFER_OVERFLOW", "PINGDUB_XRUNS",      "PINGDUB_DRIFT_PPM",
                          "PINGDUB_AV_OFFSET_MS",  "PINGDUB_STOP_REASON",  "PINGDUB_XDS_TITLE",    "PINGDUB_XDS_RATING"};
+    plan.frameHashes = m_cfg.checksums;
+    ChapterSettings chs;
+    chs.intervalMinutes = m_cfg.output.chapterIntervalMin;
+    chs.boundaries = m_cfg.output.chapterBoundaries;
+    m_chapters.reset(chs, m_vfmt.fps);
+    if (chs.enabled()) {
+        plan.chapters = [this](int64_t start, int64_t end, bool final) {
+            // A boundary right before a split may still be in the analysis queue.
+            if (!final) m_analysis.waitProcessed(end, 3000);
+            return m_chapters.forSegment(start, end, final);
+        };
+    }
 
     m_out = std::make_unique<OutputWriter>(m_log.get());
     if (!m_out->open(plan, err)) {
@@ -478,7 +527,10 @@ bool CaptureSession::startCapture(const std::string& label, std::string& err) {
     sc.sampleBits = sampleFmtBits(m_afmt.fmt);
     if (m_cfg.stop.durationSec > 0)
         sc.maxFrames = uint64_t(std::llround(m_cfg.stop.durationSec * m_vfmt.fps.num / double(m_vfmt.fps.den)));
-    m_sync = std::make_unique<SyncEngine>(sc, m_out.get());
+    m_tee.out = m_out.get();
+    m_tee.analysis = &m_analysis;
+    m_tee.audioPos = 0;
+    m_sync = std::make_unique<SyncEngine>(sc, &m_tee);
 
     m_vbi.reset();
     if (m_cfg.captureVbi) {
@@ -517,6 +569,21 @@ bool CaptureSession::startCapture(const std::string& label, std::string& err) {
     m_stopReason.clear();
     m_error.clear();
     m_stopSync = false;
+    {
+        CaptureAnalysisPlan ap;
+        ap.basePath = m_basePath;
+        ap.vfmt = m_vfmt;
+        ap.haveAudio = m_audioPtr != nullptr;
+        ap.afmt = m_afmt;
+        ap.contactSheetSec = m_cfg.output.contactSheetSec;
+        ap.log = m_log.get();
+        ap.chapters = &m_chapters;
+        m_analysis.beginCapture(ap, m_cfg.analysis);
+    }
+    {
+        std::lock_guard<std::mutex> fl(m_finishMutex);
+        m_finishStage.clear();
+    }
     m_sthread = std::thread([this] { syncLoop(); });
     m_capturing = true;
     return true;
@@ -557,6 +624,8 @@ void CaptureSession::writeJsonSidecar(const CaptureSummary& s) {
     j.str("stop_reason", s.stopReason);
     if (!s.error.empty()) j.str("error", s.error);
     j.str("tape_label", m_label);
+    j.str("profile", m_cfg.profileName);
+    j.str("output_folder", s.folder);
     j.strList("files", s.files);
     j.strList("sidecars", s.sidecars);
     j.begin("device");
@@ -595,6 +664,13 @@ void CaptureSession::writeJsonSidecar(const CaptureSummary& s) {
     j.num("segment_seconds", m_cfg.output.segmentSeconds);
     j.integer("segment_bytes", (long long)m_cfg.output.segmentBytes);
     j.str("overflow_folder", m_cfg.output.overflowFolder);
+    j.str("folder_template", folderTemplate());
+    j.integer("chapter_interval_min", m_cfg.output.chapterIntervalMin);
+    j.boolean("chapter_boundaries", m_cfg.output.chapterBoundaries);
+    j.num("contact_sheet_sec", m_cfg.output.contactSheetSec);
+    j.num("level_threshold_pct", m_cfg.analysis.watch.thresholdPct);
+    j.num("level_min_seconds", m_cfg.analysis.watch.minSeconds);
+    j.integer("chroma_limit", m_cfg.analysis.chromaLimit);
     j.begin("controls");
     if (m_video)
         for (const auto& c : m_video->controls()) j.integer(c.name, c.value);
@@ -619,7 +695,51 @@ void CaptureSession::writeJsonSidecar(const CaptureSummary& s) {
     j.num("av_offset_ms", s.sync.avOffsetMs);
     j.boolean("resample_clamp_hit", s.sync.clampHit);
     j.integer("bytes_written", m_out ? (long long)m_out->bytesWritten() : 0);
+    const CaptureAnalysisResult& an = s.analysis;
+    j.integer("level_warnings", (long long)(an.levelEpisodes[0] + an.levelEpisodes[1] + an.levelEpisodes[2]));
+    j.integer("audio_faults", (long long)(an.audioEvents[0] + an.audioEvents[1] + an.audioEvents[2] + an.audioEvents[3]));
+    j.integer("chapters", (long long)s.chapters.size());
     j.end();
+    j.begin("level_events");
+    j.integer("crush", (long long)an.levelEpisodes[int(LevelKind::Crush)]);
+    j.integer("clip", (long long)an.levelEpisodes[int(LevelKind::Clip)]);
+    j.integer("chroma", (long long)an.levelEpisodes[int(LevelKind::Chroma)]);
+    j.end();
+    j.begin("audio_events");
+    j.integer("dropouts", (long long)an.audioEvents[int(AudioFault::Dropout)]);
+    j.integer("bursts", (long long)an.audioEvents[int(AudioFault::Burst)]);
+    j.integer("dead_channel", (long long)an.audioEvents[int(AudioFault::DeadChannel)]);
+    j.integer("phase", (long long)an.audioEvents[int(AudioFault::Phase)]);
+    j.end();
+    j.begin("analysis");
+    j.integer("frames_analyzed", (long long)an.framesAnalyzed);
+    j.integer("frames_not_analyzed", (long long)an.framesNotAnalyzed);
+    j.integer("audio_frames_not_checked", (long long)an.audioSkipped);
+    j.end();
+    j.beginArray("segments");
+    for (const SegmentRecord& seg : s.segments) {
+        j.begin().str("file", seg.path).integer("start_frame", seg.startSlot).integer("frames", seg.frames);
+        if (!seg.frameMd5.empty()) j.str("framemd5", seg.frameMd5);
+        if (!seg.chaptersTxt.empty()) j.str("chapters_txt", seg.chaptersTxt);
+        auto it = s.sha256.find(seg.path);
+        if (it != s.sha256.end()) j.str("sha256", it->second);
+        j.end();
+    }
+    j.endArray();
+    j.beginArray("chapters");
+    for (const Chapter& ch : s.chapters) j.begin().integer("start", ch.start).integer("end", ch.end).str("title", ch.title).end();
+    j.endArray();
+    const ContactSheetInfo& cs = an.sheet;
+    if (!cs.empty()) {
+        j.begin("contact_sheet");
+        j.num("interval_sec", cs.intervalSec).integer("tile_width", cs.tileWidth).integer("tile_height", cs.tileHeight);
+        j.integer("columns", cs.columns).integer("rows", cs.rows).integer("gap", cs.gap).integer("label_height", cs.labelHeight);
+        j.strList("pages", cs.pages);
+        j.beginArray("thumbs");
+        for (const ContactThumb& t : cs.thumbs) j.begin().integer("frame", t.slot).integer("page", t.page).integer("index", t.index).end();
+        j.endArray();
+        j.end();
+    }
     if (m_vbi) {
         const XdsInfo x = m_vbi->xds();
         j.begin("xds").str("title", x.title).str("rating", x.rating).end();
@@ -640,18 +760,79 @@ CaptureSummary CaptureSession::stopCapture(const std::string& reason) {
     s.sync = m_sync->counters();
     s.seconds = double(s.sync.framesOut) * m_vfmt.fps.den / m_vfmt.fps.num;
     s.stopReason = m_stopReason.empty() ? reason : m_stopReason;
+    {
+        std::lock_guard<std::mutex> fl(m_folderMutex);
+        s.folder = m_folder;
+    }
+    s.basePath = m_basePath;
+    setFinishing("analysis");
+    // Drains the analysis queue: level and audio events, the last contact sheet
+    // page and every recording boundary are known after this.
+    s.analysis = m_analysis.endCapture();
+    if (!s.analysis.sheetError.empty() && m_cfg.output.contactSheetSec > 0) warn("Contact sheet: " + s.analysis.sheetError);
     if (m_vbi) {
         for (const auto& f : m_vbi->stop(int64_t(s.sync.framesOut))) s.sidecars.push_back(f);
     }
     if (m_out->failed()) s.error = m_out->error();
     m_log->log("capture_stop", int64_t(s.sync.framesOut), s.sync.framesOut, s.stopReason);
+    setFinishing("finalizing the file");
     m_out->close(finalTags(s));
     if (s.error.empty() && m_out->failed()) s.error = m_out->error();
     s.files = m_out->files();
+    s.segments = m_out->segments();
+    s.chapters = m_chapters.all(int64_t(s.sync.framesOut));
     s.sidecars.insert(s.sidecars.begin(), {m_basePath + ".log.csv", m_basePath + ".json"});
+    for (SegmentRecord& seg : s.segments) {
+        if (!seg.frameMd5.empty()) s.sidecars.push_back(seg.frameMd5);
+        if (!seg.chaptersTxt.empty()) s.sidecars.push_back(seg.chaptersTxt);
+        if (seg.chapters.empty() || m_cfg.output.container != Container::MKV) continue;
+        // Check the chapters made it into the file; if this FFmpeg dropped
+        // them, the same list goes in a sidecar instead.
+        unsigned got = 0;
+        AVFormatContext* fc = nullptr;
+        if (avformat_open_input(&fc, seg.path.c_str(), nullptr, nullptr) == 0) {
+            got = fc->nb_chapters;
+            avformat_close_input(&fc);
+        }
+        if (got != seg.chapters.size()) {
+            seg.chaptersTxt = sidecarFor(seg.path, ".chapters.txt");
+            writeTextFile(seg.chaptersTxt, ffmetadataChapters(seg.chapters, m_vfmt.fps));
+            s.sidecars.push_back(seg.chaptersTxt);
+            warn("Matroska chapters did not stick in " + seg.path + "; they are in " + seg.chaptersTxt + " instead.");
+        }
+    }
+    for (const std::string& p : s.analysis.sheet.pages) s.sidecars.push_back(p);
+    if (m_cfg.checksums) {
+        uint64_t total = 0, done = 0;
+        for (const std::string& f : s.files) {
+            std::error_code ec;
+            total += uint64_t(std::filesystem::file_size(f, ec));
+        }
+        for (const std::string& f : s.files) {
+            std::string hex, herr;
+            uint64_t before = done;
+            const bool ok = sha256File(f, hex, herr, [&](uint64_t d, uint64_t) {
+                done = before + d;
+                char b[64];
+                std::snprintf(b, sizeof b, "checksum %.0f%%", total ? 100.0 * double(done) / double(total) : 0.0);
+                setFinishing(b);
+                return true;
+            });
+            if (!ok) {
+                warn("SHA-256 of " + f + " failed: " + herr);
+                continue;
+            }
+            s.sha256[f] = hex;
+            const std::string side = writeSha256Sidecar(f, hex);
+            if (side.empty()) warn("cannot write the .sha256 sidecar for " + f);
+            else s.sidecars.push_back(side);
+        }
+    }
     s.ok = s.error.empty();
+    setFinishing("sidecars");
     writeJsonSidecar(s);
     m_log->close();
+    setFinishing("");
     m_vbi.reset();
     m_sync.reset();
     m_out.reset();
@@ -669,9 +850,10 @@ void CaptureSession::monitorLoop() {
     while (m_run) {
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
         const int64_t now = monotonicNs();
-        if (now - lastSignalPoll >= 1000000000LL) {
+        if (now - lastSignalPoll >= 240000000LL) {
             lastSignalPoll = now;
             SignalStatus st = m_video->signalStatus();
+            m_lockedNow = !(st.known && (st.noSignal || st.noHLock));
             std::lock_guard<std::mutex> lk(m_statsMutex);
             if (m_capturing && m_log && st.noSignal != m_signal.noSignal)
                 m_log->log(st.noSignal ? "signal_lost" : "signal_restored", m_sync ? int64_t(m_sync->counters().framesOut) : -1, 0, "");
@@ -757,6 +939,8 @@ SessionStats CaptureSession::stats() {
     std::unique_lock<std::mutex> lk(m_captureMutex, std::try_to_lock);
     if (!lk.owns_lock()) {
         st.state = SessionState::Stopping;
+        std::lock_guard<std::mutex> fl(m_finishMutex);
+        st.finishing = m_finishStage;
         return st;
     }
     if (m_capturing && m_sync && m_out) {
@@ -778,6 +962,13 @@ SessionStats CaptureSession::stats() {
         if (!m_cfg.output.overflowFolder.empty() && !m_out->usingOverflow())
             freeAll += freeBytes(expandHome(m_cfg.output.overflowFolder));
         st.timeLeftSec = m_dataRate > 0 ? double(freeAll) / m_dataRate : -1;
+        st.levels = m_analysis.liveLevels();
+        st.levelEpisodes = m_analysis.levelEpisodeCount();
+        st.audioEvents = m_analysis.audioEventCount();
+        {
+            std::lock_guard<std::mutex> fl(m_folderMutex);
+            st.captureFolder = m_folder;
+        }
         if (m_vbi) {
             st.vbiActive = true;
             st.vbiDescription = m_vbi->description();
@@ -785,8 +976,7 @@ SessionStats CaptureSession::stats() {
         }
         if (m_out->failed()) st.error = m_out->error();
     } else {
-        const std::string folder = expandHome(m_cfg.output.folder.empty() ? "~/Videos/PingDub" : m_cfg.output.folder);
-        st.diskFree = freeBytes(folder);
+        st.diskFree = freeBytes(nearestExistingDir(templateBase(folderTemplate())));
         const double rate = m_video ? estimatedBytesPerSecond(m_vfmt, m_afmt, m_audioPtr != nullptr, m_cfg.output.vcodec) : 0;
         st.timeLeftSec = rate > 0 ? double(st.diskFree) / rate : -1;
     }
@@ -802,6 +992,82 @@ AudioLevels CaptureSession::levels() {
 void CaptureSession::resetClip() {
     std::lock_guard<std::mutex> lk(m_levelMutex);
     for (bool& c : m_levels.clipped) c = false;
+}
+
+void CaptureSession::setFinishing(const std::string& what) {
+    std::lock_guard<std::mutex> lk(m_finishMutex);
+    m_finishStage = what;
+}
+
+std::string CaptureSession::folderTemplate() const {
+    return m_cfg.output.folder.empty() ? "~/Videos/PingDub" : m_cfg.output.folder;
+}
+
+TemplateValues CaptureSession::templateValues(const std::string& label) const {
+    TemplateValues v;
+    v.title = label;
+    v.startRealNs = realtimeNs();
+    v.profile = m_cfg.profileName;
+    if (m_video) {
+        v.device = m_video->deviceName();
+        const int cur = m_video->currentInput();
+        for (const auto& in : m_video->inputs())
+            if (in.index == cur) v.input = in.name;
+    }
+    return v;
+}
+
+std::string CaptureSession::lastCaptureFolder() const {
+    std::lock_guard<std::mutex> lk(m_folderMutex);
+    return m_folder;
+}
+
+void CaptureSession::setAnalysisSettings(const AnalysisSettings& a) {
+    std::lock_guard<std::mutex> lk(m_captureMutex);
+    if (m_capturing) return;
+    m_cfg.analysis = a;
+    m_analysis.setSettings(a);
+}
+
+bool CaptureSession::startLevelMeasure(std::string& err) {
+    if (!m_video) {
+        err = "no device open";
+        return false;
+    }
+    if (m_capturing) {
+        err = "levels are set in preview only, never during a capture";
+        return false;
+    }
+    if (m_vfmt.pixfmt == PixFmt::MJPEG) {
+        err = "MJPEG frames are compressed by the device; Level Measure needs an uncompressed format";
+        return false;
+    }
+    m_analysis.startMeasure();
+    return true;
+}
+
+void CaptureSession::stopLevelMeasure() { m_analysis.stopMeasure(); }
+
+ProcAmp CaptureSession::procAmp() {
+    ProcAmp a;
+    if (!m_video) return a;
+    for (const VideoControl& c : m_video->controls()) {
+        if (c.readOnly || c.inactive || (c.type != VideoControl::Type::Integer && c.type != VideoControl::Type::Integer64)) continue;
+        ProcControl* t = nullptr;
+        if (c.id == V4L2_CID_BRIGHTNESS) t = &a.brightness;
+        else if (c.id == V4L2_CID_CONTRAST) t = &a.contrast;
+        else if (c.id == V4L2_CID_SATURATION) t = &a.saturation;
+        if (!t) continue;
+        t->present = c.maximum > c.minimum;
+        t->id = c.id;
+        t->name = c.name;
+        t->minimum = c.minimum;
+        t->maximum = c.maximum;
+        t->step = std::max<int64_t>(1, c.step);
+        t->defaultValue = c.defaultValue;
+        t->value = c.value;
+    }
+    return a;
 }
 
 bool CaptureSession::latestFrame(VideoFrame& out, uint64_t& serial) {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Luma histogram with the 16 and 235 limits marked and the share of pixels
 // outside them, so brightness and contrast can be set without crushing or
-// clipping. A luma waveform view is a toggle on the same widget.
+// clipping. The waveform monitor and vectorscope are their own tabs (Scopes).
 #pragma once
 
 #include "PreviewWidget.h"
@@ -19,19 +19,14 @@ class Histogram : public QWidget {
 public:
     explicit Histogram(QWidget* parent = nullptr);
     void setLuma(std::shared_ptr<const LumaPlane> luma);
-    void setWaveform(bool on);
-    bool waveform() const { return m_wave; }
     QSize sizeHint() const override { return {300, 90}; }
 
 protected:
     void paintEvent(QPaintEvent*) override;
-    void mouseDoubleClickEvent(QMouseEvent*) override;
 
 private:
     std::array<uint32_t, 256> m_hist{};
     uint64_t m_total = 0, m_below = 0, m_above = 0;
-    bool m_wave = false;
-    QImage m_waveImg;
 };
 
 }  // namespace pd

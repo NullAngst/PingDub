@@ -2,7 +2,9 @@
 // --self-test: a real 10-second capture through the whole pipeline (device
 // threads, rings, sync engine, encoder, muxer, sidecars, tag patching) using
 // the fake backends, then a check of the file that came out.
+#include "CaptureRecord.h"
 #include "CaptureSession.h"
+#include "Checksums.h"
 #include "Clock.h"
 #include "backends/FakeBackends.h"
 
@@ -159,6 +161,23 @@ int runSelfTest(bool verbose) {
         }
         check(csv, "event log sidecar written");
         check(json, "JSON sidecar written");
+
+        std::vector<FrameMd5Entry> md5;
+        std::string merr;
+        readFrameMd5(sidecarFor(f, ".framemd5"), md5, merr);
+        std::snprintf(line, sizeof line, "per-frame checksums written (%zu)", md5.size());
+        check(md5.size() == c.framesOut, line);
+        check(!readSha256Sidecar(sidecarFor(f, ".sha256")).empty(), "file checksum written");
+        const VerifyResult vr = verifyCapture(f, true);
+        check(vr.ok, "full verify passes: " + vr.summary());
+        check(!summary.analysis.sheet.pages.empty() && fs::exists(summary.analysis.sheet.pages[0]), "contact sheet written");
+        const uint64_t faults = summary.analysis.audioEvents[0] + summary.analysis.audioEvents[1] +
+                                summary.analysis.audioEvents[2] + summary.analysis.audioEvents[3];
+        std::snprintf(line, sizeof line, "no audio faults on a clean tone (%llu)", (unsigned long long)faults);
+        check(faults == 0, line);
+        CaptureRecord rec;
+        std::string rerr;
+        check(loadCaptureRecord(f, rec, rerr) && rec.frames == int64_t(c.framesOut), "capture report reads the sidecars");
     }
 
     if (failures == 0) {

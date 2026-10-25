@@ -41,6 +41,10 @@ public:
     JsonWriter& integer(const std::string& key, long long v);
     JsonWriter& boolean(const std::string& key, bool v);
     JsonWriter& strList(const std::string& key, const std::vector<std::string>& v);
+    // Arrays: beginArray, then begin()/end() per object element or intItem, then endArray.
+    JsonWriter& beginArray(const std::string& key = {});
+    JsonWriter& endArray();
+    JsonWriter& intItem(long long v);
     std::string text() const { return m_out + "\n"; }
     static std::string escape(const std::string& s);
 

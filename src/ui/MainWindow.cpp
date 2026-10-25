@@ -3,26 +3,34 @@
 
 #include "CaptionReadout.h"
 #include "Histogram.h"
+#include "LevelsPanel.h"
 #include "Meters.h"
 #include "PreviewWidget.h"
+#include "ReportWindow.h"
+#include "Scopes.h"
 #include "StatsStrip.h"
 #include "Theme.h"
 #include "backends/V4l2Logic.h"
 #include "devices/DeviceScanner.h"
 #include "dialogs/AudioDialog.h"
+#include "dialogs/CapturePicker.h"
 #include "dialogs/DiagnosticsDialog.h"
 #include "dialogs/OutputDialog.h"
 #include "dialogs/PreferencesDialog.h"
 #include "dialogs/PreflightDialog.h"
 #include "dialogs/StopConditionsDialog.h"
 #include "dialogs/TimingDialog.h"
+#include "dialogs/VerifyDialog.h"
 #include "dialogs/VideoSourceDialog.h"
+#include "engine/FolderTemplate.h"
 #include "engine/Recover.h"
 #include "engine/SysInfo.h"
+#include "platform/Notify.h"
 
 #include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QFileInfo>
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QFileDialog>
@@ -43,6 +51,7 @@
 #include <QShortcut>
 #include <QSizePolicy>
 #include <QSplitter>
+#include <QTabWidget>
 #include <QStatusBar>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -141,10 +150,16 @@ MainWindow::~MainWindow() = default;
 void MainWindow::buildMenus() {
     QMenu* file = menuBar()->addMenu(tr("&File"));
     file->addAction(tr("Open capture folder"), this, [this] {
-        const std::string f = expandHome(m_ctl->profile().output.folder.empty() ? "~/Videos/PingDub" : m_ctl->profile().output.folder);
-        makeDirs(f);
-        QDesktopServices::openUrl(QUrl::fromLocalFile(QString::fromStdString(f)));
+        // The last capture's folder; before any capture, the part of the folder before the first token.
+        QString f = m_ctl->settings().lastCaptureFolder;
+        if (f.isEmpty() || !QFileInfo(f).isDir()) {
+            f = baseFolder();
+            makeDirs(f.toStdString());
+        }
+        QDesktopServices::openUrl(QUrl::fromLocalFile(f));
     });
+    file->addAction(tr("Open re&port..."), this, [this] { openReport(); });
+    file->addAction(tr("&Verify capture..."), this, [this] { verify(); });
     file->addAction(tr("&Recover..."), this, &MainWindow::recover);
     file->addSeparator();
     file->addAction(tr("Save profile as..."), this, &MainWindow::saveProfileAs);
@@ -175,6 +190,10 @@ void MainWindow::buildMenus() {
     cap->addAction(tr("&Output..."), this, &MainWindow::openOutput);
     cap->addAction(tr("&Stop Conditions..."), this, &MainWindow::openStopConditions);
     cap->addAction(tr("Timed &Capture..."), this, &MainWindow::openTimedCapture);
+    cap->addSeparator();
+    cap->addAction(tr("&Measure Levels"), this, [this] { m_levels->toggleMeasure(); });
+    cap->addAction(tr("Set &Levels..."), this, [this] { m_levels->openSetLevels(); });
+    cap->addAction(tr("Revert levels"), this, [this] { m_levels->revert(); });
 
     QMenu* view = menuBar()->addMenu(tr("&View"));
     auto* deint = new QActionGroup(this);
@@ -201,9 +220,23 @@ void MainWindow::buildMenus() {
     m_pausePreview = view->addAction(tr("Pause preview (saves CPU)"));
     m_pausePreview->setCheckable(true);
     connect(m_pausePreview, &QAction::toggled, this, [this](bool on) { m_preview->setPaused(on); });
-    QAction* wave = view->addAction(tr("Luma waveform instead of histogram"));
-    wave->setCheckable(true);
-    connect(wave, &QAction::toggled, this, [this](bool on) { m_hist->setWaveform(on); });
+    view->addSeparator();
+    auto* scopes = new QActionGroup(this);
+    const char* scopeNames[3] = {"Histogram", "Waveform monitor", "Vectorscope"};
+    for (int i = 0; i < 3; ++i) {
+        m_scopeActs[i] = view->addAction(tr(scopeNames[i]));
+        m_scopeActs[i]->setCheckable(true);
+        scopes->addAction(m_scopeActs[i]);
+        connect(m_scopeActs[i], &QAction::triggered, this, [this, i] { setScope(i); });
+    }
+    m_paradeAct = view->addAction(tr("Waveform parade (Y, Cb, Cr)"));
+    m_paradeAct->setCheckable(true);
+    m_paradeAct->setChecked(m_ctl->settings().parade);
+    connect(m_paradeAct, &QAction::toggled, this, [this](bool on) {
+        m_wave->setParade(on);
+        m_ctl->settings().parade = on;
+        m_ctl->settings().save();
+    });
 
     QMenu* tools = menuBar()->addMenu(tr("&Tools"));
     tools->addAction(tr("&Diagnostics..."), this, &MainWindow::openDiagnostics);
@@ -325,11 +358,30 @@ void MainWindow::buildUi() {
     auto* bottom = panel("bottomPanel", central);
     auto* bh = new QHBoxLayout(bottom);
     m_meters = new Meters(bottom);
-    m_hist = new Histogram(bottom);
-    bh->addWidget(m_meters, 1);
-    bh->addWidget(m_hist, 1);
-    bottom->setFixedHeight(110);
+    m_levels = new LevelsPanel(m_ctl, bottom);
+    connect(m_levels, &LevelsPanel::message, this, [this](const QString& t) { statusBar()->showMessage(t, 8000); });
+    m_scopeTabs = new QTabWidget(bottom);
+    m_scopeTabs->setDocumentMode(true);
+    m_hist = new Histogram(m_scopeTabs);
+    m_wave = new Scope(Scope::Mode::Waveform, m_scopeTabs);
+    m_vector = new Scope(Scope::Mode::Vectorscope, m_scopeTabs);
+    m_wave->setParade(m_ctl->settings().parade);
+    m_vector->setChromaLimit(m_ctl->settings().chromaLimit);
+    m_scopeTabs->addTab(m_hist, tr("Histogram"));
+    m_scopeTabs->addTab(m_wave, tr("Waveform"));
+    m_scopeTabs->addTab(m_vector, tr("Vectorscope"));
+    bh->addWidget(m_meters, 3);
+    bh->addWidget(m_levels, 0);
+    bh->addWidget(m_scopeTabs, 4);
+    bottom->setFixedHeight(170);
     v->addWidget(bottom);
+    connect(m_scopeTabs, &QTabWidget::currentChanged, this, [this](int i) { setScope(i); });
+    {
+        const QString sc = m_ctl->settings().scope;
+        const int i = sc == "waveform" ? 1 : sc == "vectorscope" ? 2 : 0;
+        m_scopeTabs->setCurrentIndex(i);
+        setScope(i);
+    }
     connect(m_meters, &Meters::clipReset, this, [this] { m_ctl->session().resetClip(); });
 
     m_stats = new StatsStrip(central);
@@ -511,6 +563,28 @@ void MainWindow::onDeviceChanged() {
 void MainWindow::tickFrame() {
     VideoFrame f;
     if (m_ctl->session().latestFrame(f, m_previewSerial)) m_preview->showFrame(f);
+    // Scopes draw from the analysis thread's copy, only the one on screen.
+    if (m_scopeTabs->currentIndex() > 0) {
+        ScopeFrame sf;
+        if (m_ctl->session().latestScope(sf, m_scopeSerial)) (m_scopeTabs->currentIndex() == 1 ? m_wave : m_vector)->setFrame(sf);
+    }
+}
+
+void MainWindow::setScope(int index) {
+    index = std::clamp(index, 0, 2);
+    if (m_scopeTabs->currentIndex() != index) m_scopeTabs->setCurrentIndex(index);
+    if (m_scopeActs[index]) m_scopeActs[index]->setChecked(true);
+    static const char* keys[3] = {"histogram", "waveform", "vectorscope"};
+    if (m_ctl->settings().scope != keys[index]) {
+        m_ctl->settings().scope = keys[index];
+        m_ctl->settings().save();
+    }
+    m_scopeSerial = 0;
+}
+
+QString MainWindow::baseFolder() const {
+    const std::string t = m_ctl->profile().output.folder.empty() ? "~/Videos/PingDub" : m_ctl->profile().output.folder;
+    return QString::fromStdString(templateBase(t));
 }
 
 void MainWindow::tickStats() {
@@ -530,6 +604,29 @@ void MainWindow::tickStats() {
         m_capture->style()->polish(m_capture);
     }
     m_label->setEnabled(!cap);
+    m_levels->setCapturing(cap);
+    m_levels->refresh();
+    // Crush and clip warnings: the status bar says what and since when.
+    QStringList what;
+    if (st.state == SessionState::Capturing) {
+        static const char* names[3] = {"Blacks crushed", "Whites clipped", "Chroma past the limit"};
+        static const char* units[3] = {"below 16", "above 235", "past the limit"};
+        for (int k = 0; k < 3; ++k)
+            if (st.levels.active[k])
+                what << tr("%1 since %2 (%3% %4)")
+                            .arg(tr(names[k]))
+                            .arg(humanDuration(double(st.levels.since[k]) * s.videoFormat().fps.den / s.videoFormat().fps.num))
+                            .arg(st.levels.pct[k], 0, 'f', 1)
+                            .arg(tr(units[k]));
+    }
+    const QString msg = what.join("; ");
+    if (!msg.isEmpty()) {
+        if (statusBar()->currentMessage() != msg + tr(". A re-capture with new levels may be worth it."))
+            statusBar()->showMessage(msg + tr(". A re-capture with new levels may be worth it."));
+    } else if (!m_levelMsg.isEmpty() && statusBar()->currentMessage() == m_levelMsg) {
+        statusBar()->clearMessage();
+    }
+    m_levelMsg = msg.isEmpty() ? QString() : msg + tr(". A re-capture with new levels may be worth it.");
     if (m_armTimer.isActive()) {
         const qint64 left = QDateTime::currentDateTime().secsTo(m_armed.startAt);
         m_timedLabel->setText(tr("Starts in %1").arg(humanDuration(double(left))));
@@ -549,7 +646,7 @@ void MainWindow::startCapture(double durationOverride) {
         return;
     }
     const double planned = durationOverride > 0 ? durationOverride : m_ctl->settings().stop.durationSec;
-    const auto items = s.preflight(planned);
+    const auto items = s.preflight(planned, m_label->text().trimmed().toStdString());
     if (PreflightDialog::needsAttention(items) && !m_armed.startAt.isValid()) {
         PreflightDialog d(items, this);
         if (d.exec() != QDialog::Accepted) return;
@@ -589,10 +686,16 @@ void MainWindow::onCaptureFinished(const CaptureSummary& s, bool automatic) {
                        .arg(c.xruns)
                        .arg(QString::fromStdString(s.stopReason));
     for (const auto& f : s.files) text += "\n" + QString::fromStdString(f);
-    if (!s.ok) {
-        QMessageBox::warning(this, tr("Capture finished with an error"), QString::fromStdString(s.error) + "\n\n" + text);
-    } else if (automatic) {
-        QMessageBox::information(this, tr("Capture finished"), text);
+    if (!s.folder.empty()) {
+        m_ctl->settings().lastCaptureFolder = QString::fromStdString(s.folder);
+        m_ctl->settings().save();
+    }
+    if (automatic && m_ctl->settings().notifyAutoStop) notifyAutoStop(s);
+    if (!s.ok) QMessageBox::warning(this, tr("Capture finished with an error"), QString::fromStdString(s.error) + "\n\n" + text);
+    // The report answers whether this capture is good or needs a re-run.
+    if (!s.files.empty()) {
+        if (ReportWindow* r = ReportWindow::open(QString::fromStdString(s.jsonPath()), this))
+            connect(r, &ReportWindow::verifyRequested, this, [this](const QString& p) { verify(p); });
     }
     statusBar()->showMessage(text.section('\n', 0, 0), 30000);
     if (s.stopReason.rfind("device lost", 0) == 0) {
@@ -621,7 +724,7 @@ void MainWindow::openTiming() {
 }
 
 void MainWindow::openOutput() {
-    OutputDialog d(m_ctl->profile().output, this);
+    OutputDialog d(m_ctl->profile().output, m_ctl->session().templateValues(m_label->text().trimmed().toStdString()), this);
     if (d.exec() == QDialog::Accepted) editProfile([&](Profile& p) { p.output = d.result(); });
     populateSidePanel();
 }
@@ -641,7 +744,7 @@ void MainWindow::openTimedCapture() {
         return;
     }
     // Check the setup now rather than at 3 a.m.
-    const auto items = m_ctl->session().preflight(t.durationSec);
+    const auto items = m_ctl->session().preflight(t.durationSec, m_label->text().trimmed().toStdString());
     if (PreflightDialog::needsAttention(items)) {
         PreflightDialog pd(items, this);
         if (pd.exec() != QDialog::Accepted) return;
@@ -666,6 +769,8 @@ void MainWindow::openPreferences() {
         m_ctl->settings().save();
         ThemeManager::instance().apply(m_ctl->settings().theme);
         applyKeys();
+        m_ctl->applyAnalysisSettings();
+        m_vector->setChromaLimit(m_ctl->settings().chromaLimit);
         m_ctl->session().setRuntimeSettings(m_ctl->profile().output, m_ctl->profile().timing, m_ctl->settings().stop,
                                             m_ctl->settings().captureVbi);
     }
@@ -686,7 +791,7 @@ void MainWindow::saveProfileAs() {
 }
 
 void MainWindow::recover() {
-    const QString f = QFileDialog::getOpenFileName(this, tr("Recover a capture"), QString(), tr("Captures (*.mkv *.avi)"));
+    const QString f = CapturePicker::pick(this, tr("Recover a capture"), baseFolder());
     if (f.isEmpty()) return;
     auto* dlg = new QProgressDialog(tr("Rebuilding the index of %1").arg(f), tr("Cancel"), 0, 1000, this);
     dlg->setWindowModality(Qt::WindowModal);
@@ -705,6 +810,46 @@ void MainWindow::recover() {
             if (r.ok) QMessageBox::information(this, tr("Recover"), QString::fromStdString(r.message + "\n" + r.outPath));
             else QMessageBox::warning(this, tr("Recover"), QString::fromStdString(r.message));
         }, Qt::QueuedConnection);
+    }).detach();
+}
+
+void MainWindow::verify(const QString& path) {
+    const QString f = path.isEmpty() ? CapturePicker::pick(this, tr("Verify a capture"), baseFolder()) : path;
+    if (f.isEmpty()) return;
+    VerifyDialog d(f, this);
+    d.exec();
+}
+
+void MainWindow::openReport(const QString& path) {
+    const QString f = path.isEmpty() ? CapturePicker::pick(this, tr("Open a capture report"), baseFolder()) : path;
+    if (f.isEmpty()) return;
+    auto* r = new ReportWindow(this);
+    QString err;
+    if (!r->load(f, err)) {
+        delete r;
+        QMessageBox::warning(this, tr("Capture report"), err);
+        return;
+    }
+    connect(r, &ReportWindow::verifyRequested, this, [this](const QString& p) { verify(p); });
+    r->show();
+}
+
+void MainWindow::notifyAutoStop(const CaptureSummary& s) {
+    const SyncCounters& c = s.sync;
+    const CaptureAnalysisResult& a = s.analysis;
+    const uint64_t warnings = a.levelEpisodes[0] + a.levelEpisodes[1] + a.levelEpisodes[2] + a.audioEvents[0] + a.audioEvents[1] +
+                              a.audioEvents[2] + a.audioEvents[3];
+    const QString summary = s.ok ? tr("Capture stopped: %1").arg(QString::fromStdString(s.stopReason))
+                                 : tr("Capture stopped with an error: %1").arg(QString::fromStdString(s.error));
+    const QString body = tr("%1 captured. %2 inserted, %3 dropped, %4 warnings.")
+                             .arg(humanDuration(s.seconds))
+                             .arg(c.inserted)
+                             .arg(c.dropped + c.driverDrops + c.ringDrops)
+                             .arg(warnings);
+    // Over D-Bus, off the GUI thread: a slow notification service never stalls the window.
+    std::thread([summary, body] {
+        std::string err;
+        sendDesktopNotification(summary.toStdString(), body.toStdString(), err);
     }).detach();
 }
 

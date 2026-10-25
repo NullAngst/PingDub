@@ -12,15 +12,8 @@ namespace pd {
 Histogram::Histogram(QWidget* parent) : QWidget(parent) {
     setMinimumHeight(70);
     setToolTip(tr("Luma histogram. Lines at 16 (black) and 235 (white); the numbers are the share of pixels below and "
-                  "above them. Double-click for the waveform view."));
+                  "above them."));
 }
-
-void Histogram::setWaveform(bool on) {
-    m_wave = on;
-    update();
-}
-
-void Histogram::mouseDoubleClickEvent(QMouseEvent*) { setWaveform(!m_wave); }
 
 void Histogram::setLuma(std::shared_ptr<const LumaPlane> luma) {
     if (!luma || luma->y.empty()) return;
@@ -36,24 +29,6 @@ void Histogram::setLuma(std::shared_ptr<const LumaPlane> luma) {
         if (v < 16) m_below += m_hist[size_t(v)];
         if (v > 235) m_above += m_hist[size_t(v)];
     }
-    if (m_wave) {
-        // Columns of the picture against luma, brightness = how many pixels.
-        const int cols = std::min(w, 360);
-        std::vector<uint16_t> acc(size_t(cols) * 256, 0);
-        for (int r = 0; r < h; r += 2) {
-            const uint8_t* row = luma->y.data() + size_t(r) * w;
-            for (int x = 0; x < w; ++x) {
-                uint16_t& a = acc[size_t(row[x]) * cols + size_t(x * cols / w)];
-                if (a < 65535) ++a;
-            }
-        }
-        m_waveImg = QImage(cols, 256, QImage::Format_Grayscale8);
-        const double scale = 255.0 / std::log1p(double(h) / 2.0 * double(w) / cols / 8.0 + 1.0);
-        for (int v = 0; v < 256; ++v) {
-            uchar* line = m_waveImg.scanLine(255 - v);
-            for (int x = 0; x < cols; ++x) line[x] = uchar(std::min(255.0, std::log1p(double(acc[size_t(v) * cols + x])) * scale));
-        }
-    }
     update();
 }
 
@@ -63,13 +38,7 @@ void Histogram::paintEvent(QPaintEvent*) {
     const QRect area = rect().adjusted(2, 2, -2, -16);
     p.fillRect(area, QColor(0x20, 0x20, 0x20));
     auto xOf = [&](int v) { return area.left() + v * area.width() / 256; };
-    if (m_wave && !m_waveImg.isNull()) {
-        p.drawImage(area, m_waveImg);
-        const auto yOf = [&](int v) { return area.bottom() - v * area.height() / 256; };
-        p.setPen(QPen(StatusColor::Warn, 1, Qt::DashLine));
-        p.drawLine(area.left(), yOf(16), area.right(), yOf(16));
-        p.drawLine(area.left(), yOf(235), area.right(), yOf(235));
-    } else if (m_total) {
+    if (m_total) {
         uint32_t peak = 1;
         for (int v = 1; v < 255; ++v) peak = std::max(peak, m_hist[size_t(v)]);
         const double lp = std::log1p(double(peak));
@@ -93,7 +62,7 @@ void Histogram::paintEvent(QPaintEvent*) {
     p.setPen(above > 0.5 ? StatusColor::Bad : pal.color(QPalette::PlaceholderText));
     p.drawText(txt, Qt::AlignRight | Qt::AlignVCenter, tr("above 235: %1 (%2%)").arg(m_above * 4).arg(above, 0, 'f', 2));
     p.setPen(pal.color(QPalette::PlaceholderText));
-    p.drawText(txt, Qt::AlignHCenter | Qt::AlignVCenter, m_wave ? tr("waveform") : tr("histogram"));
+    p.drawText(txt, Qt::AlignHCenter | Qt::AlignVCenter, tr("histogram"));
 }
 
 }  // namespace pd

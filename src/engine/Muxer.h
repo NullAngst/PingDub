@@ -31,6 +31,12 @@ struct MuxStream {
     std::string title;
 };
 
+// A chapter in the first stream's encoder time base (frames).
+struct MuxChapter {
+    int64_t start = 0, end = 0;
+    std::string title;
+};
+
 struct SegmentSpec {
     std::string path;
     Container container = Container::MKV;
@@ -57,7 +63,9 @@ public:
     // The calls below queue work for the writer thread, in order.
     void beginSegment(const SegmentSpec& spec);
     void writePacket(AVPacket* pkt, int stream);  // takes ownership
-    void endSegment();
+    // Matroska only: chapters go in with the trailer. FFmpeg's muxer writes
+    // chapters added after the header there, so the list can be final.
+    void endSegment(std::vector<MuxChapter> chapters = {});
     // Drains the queue, closes any open segment and joins the thread.
     void stop();
 
@@ -79,11 +87,12 @@ private:
         AVPacket* pkt = nullptr;
         int stream = 0;
         std::shared_ptr<SegmentSpec> spec;
+        std::vector<MuxChapter> chapters;
     };
     void run();
     void doBegin(const SegmentSpec& spec);
     void doPacket(AVPacket* pkt, int stream);
-    void doEnd();
+    void doEnd(const std::vector<MuxChapter>& chapters = {});
     void fail(const std::string& msg);
 
     std::unique_ptr<BlockingQueue<Cmd>> m_queue;

@@ -87,6 +87,7 @@ bool OutputWriter::openSegment(int64_t startSlot, uint64_t startSample) {
         setError(err);
         return false;
     }
+    m_venc->setFrameHashes(m_plan.frameHashes);
     if (m_plan.haveAudio) {
         m_aenc = std::make_unique<AudioEncoder>();
         if (!m_aenc->open(m_plan.afmt, m_plan.out.acodec, m_plan.out.container, err)) {
@@ -127,6 +128,17 @@ bool OutputWriter::openSegment(int64_t startSlot, uint64_t startSample) {
         if (m_plan.tags.count("TITLE")) spec.tags["title"] = m_plan.tags.at("TITLE");
     }
     m_muxer.beginSegment(spec);
+    m_segPath = spec.path;
+    m_segFrames = 0;
+    if (m_plan.frameHashes && !m_venc->passthrough()) {
+        FrameMd5Header h;
+        h.tb = {m_venc->timeBase().num, m_venc->timeBase().den};
+        h.width = m_plan.vfmt.width;
+        h.height = m_plan.vfmt.height;
+        h.sar = m_plan.vfmt.sar;
+        if (!m_md5.open(sidecarFor(spec.path, ".framemd5"), h) && m_log)
+            m_log->log("warning", startSlot, 0, "cannot write " + sidecarFor(spec.path, ".framemd5"));
+    }
     m_segIndex = index;
     m_segStartSlot = startSlot;
     m_segStartSample = startSample;
@@ -135,7 +147,29 @@ bool OutputWriter::openSegment(int64_t startSlot, uint64_t startSample) {
     return true;
 }
 
-void OutputWriter::closeSegment() {
+void OutputWriter::closeSegment(bool final) {
+    SegmentRecord rec;
+    rec.path = m_segPath;
+    rec.startSlot = m_segStartSlot;
+    rec.frames = m_segFrames;
+    if (m_plan.chapters && m_segFrames > 0) rec.chapters = m_plan.chapters(m_segStartSlot, m_segStartSlot + m_segFrames, final);
+    std::vector<MuxChapter> mux;
+    for (const Chapter& c : rec.chapters) mux.push_back({c.start, c.end, c.title});
+    if (m_md5.isOpen()) {
+        rec.frameMd5 = m_md5.path();
+        m_md5.close();
+    }
+    if (m_plan.out.container == Container::AVI && !rec.chapters.empty()) {
+        // AVI has no chapters; FFmpeg's metadata format carries them instead.
+        rec.chaptersTxt = sidecarFor(m_segPath, ".chapters.txt");
+        if (!writeTextFile(rec.chaptersTxt, ffmetadataChapters(rec.chapters, m_plan.vfmt.fps))) rec.chaptersTxt.clear();
+        else if (m_log) m_log->log("chapters", m_segStartSlot, rec.chapters.size(), "AVI has no chapters; written to " + rec.chaptersTxt);
+        mux.clear();
+    }
+    if (!rec.path.empty()) {
+        std::lock_guard<std::mutex> lk(m_segMutex);
+        m_segs.push_back(rec);
+    }
     if (m_venc) {
         m_pkts.clear();
         m_venc->flush(m_pkts);
@@ -147,7 +181,7 @@ void OutputWriter::closeSegment() {
         for (AVPacket* p : m_pkts) m_muxer.writePacket(p, 1);
     }
     m_pkts.clear();
-    m_muxer.endSegment();
+    m_muxer.endSegment(std::move(mux));
     m_venc.reset();
     m_aenc.reset();
 }
@@ -184,6 +218,10 @@ void OutputWriter::encodeVideo(const Item& it) {
     for (AVPacket* p : m_pkts) m_muxer.writePacket(p, 0);
     m_pkts.clear();
     ++m_framesEncoded;
+    ++m_segFrames;
+    uint8_t md5[16];
+    int size = 0;
+    if (m_md5.isOpen() && m_venc->lastFrameHash(md5, size)) m_md5.add(it.slot - m_segStartSlot, size, md5);
 }
 
 void OutputWriter::encodeAudio(const int32_t* s, size_t frames) {
@@ -200,7 +238,7 @@ void OutputWriter::run() {
     auto tryCompleteRoll = [&](bool force) {
         if (!m_pendingRoll) return;
         if (!force && m_plan.haveAudio && m_audioCount < m_rollSample) return;
-        closeSegment();
+        closeSegment(false);
         if (!openSegment(m_rollSlot, m_rollSample)) return;
         m_pendingRoll = false;
         std::vector<Item> held;
@@ -247,7 +285,12 @@ void OutputWriter::run() {
         it = Item{};
     }
     tryCompleteRoll(true);
-    if (!m_pendingRoll) closeSegment();
+    if (!m_pendingRoll) closeSegment(true);
+}
+
+std::vector<SegmentRecord> OutputWriter::segments() const {
+    std::lock_guard<std::mutex> lk(m_segMutex);
+    return m_segs;
 }
 
 void OutputWriter::syncVideo(const VideoFrame& frame, int64_t slot, bool inserted) {

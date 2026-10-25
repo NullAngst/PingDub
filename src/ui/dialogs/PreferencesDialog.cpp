@@ -6,6 +6,9 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QGroupBox>
+#include <QSpinBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QKeySequenceEdit>
@@ -41,7 +44,38 @@ PreferencesDialog::PreferencesDialog(const AppSettings& s, QWidget* parent) : QD
     m_vbi = new QCheckBox(tr("Capture VBI and closed captions when the device has a VBI node"), this);
     m_vbi->setChecked(s.captureVbi);
     form->addRow(QString(), m_vbi);
+    m_notify = new QCheckBox(tr("Desktop notification when a capture stops on its own"), this);
+    m_notify->setChecked(s.notifyAutoStop);
+    m_notify->setToolTip(tr("A stop condition fired, the timer ran out, the device was lost or the disk filled."));
+    form->addRow(QString(), m_notify);
     top->addLayout(form);
+
+    auto* lv = new QGroupBox(tr("Crush and clip warnings"), this);
+    auto* lf = new QFormLayout(lv);
+    m_threshold = new QDoubleSpinBox(lv);
+    m_threshold->setRange(0.01, 50.0);
+    m_threshold->setDecimals(2);
+    m_threshold->setSingleStep(0.1);
+    m_threshold->setSuffix(" %");
+    m_threshold->setValue(s.levelThresholdPct);
+    lf->addRow(tr("Warn when more than"), m_threshold);
+    auto* thNote = new QLabel(tr("of active-picture pixels are below 16, above 235, or past the chroma limit"), lv);
+    thNote->setObjectName("panelLabel");
+    thNote->setWordWrap(true);
+    lf->addRow(QString(), thNote);
+    m_seconds = new QDoubleSpinBox(lv);
+    m_seconds->setRange(0.5, 600.0);
+    m_seconds->setDecimals(1);
+    m_seconds->setSuffix(" s");
+    m_seconds->setValue(s.levelSeconds);
+    lf->addRow(tr("for at least"), m_seconds);
+    m_chroma = new QSpinBox(lv);
+    m_chroma->setRange(60, 180);
+    m_chroma->setValue(s.chromaLimit);
+    m_chroma->setToolTip(tr("Chroma distance from neutral, in 8-bit codes. 112 is the edge of the 16-240 chroma range; "
+                            "75% color bars sit near 90."));
+    lf->addRow(tr("Chroma limit"), m_chroma);
+    top->addWidget(lv);
     auto* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     connect(bb, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(bb, &QDialogButtonBox::rejected, this, &QDialog::reject);
@@ -59,6 +93,10 @@ void PreferencesDialog::store(AppSettings& s) const {
     if (!m_stop->keySequence().isEmpty()) s.keyStop = m_stop->keySequence().toString();
     s.confirmStop = m_confirm->isChecked();
     s.captureVbi = m_vbi->isChecked();
+    s.notifyAutoStop = m_notify->isChecked();
+    s.levelThresholdPct = m_threshold->value();
+    s.levelSeconds = m_seconds->value();
+    s.chromaLimit = m_chroma->value();
 }
 
 }  // namespace pd

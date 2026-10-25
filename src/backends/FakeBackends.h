@@ -51,7 +51,11 @@ private:
     FakeVideoOptions m_opt;
     VideoFormat m_fmt;
     int m_input = 0;
+    // A simulated proc amp, so Set Levels can be tried with no hardware:
+    // brightness is an offset, contrast a gain around black, saturation a chroma gain.
     int m_brightness = 0;
+    int m_contrast = 128;
+    int m_saturation = 128;
     bool m_running = false;
     int64_t m_start = 0;
     uint64_t m_next = 0;

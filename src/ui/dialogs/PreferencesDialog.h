@@ -6,6 +6,8 @@
 class QComboBox;
 class QKeySequenceEdit;
 class QCheckBox;
+class QDoubleSpinBox;
+class QSpinBox;
 
 namespace pd {
 
@@ -27,6 +29,10 @@ private:
     QKeySequenceEdit* m_stop;
     QCheckBox* m_confirm;
     QCheckBox* m_vbi;
+    QCheckBox* m_notify;
+    QDoubleSpinBox* m_threshold;
+    QDoubleSpinBox* m_seconds;
+    QSpinBox* m_chroma;
 };
 
 }  // namespace pd

@@ -62,6 +62,17 @@ add_library(pingdub_engine STATIC
     src/engine/VbiCapture.cpp
     src/engine/Cea608.cpp
     src/engine/CaptureSession.cpp
+    src/engine/FrameAnalyzer.cpp
+    src/engine/Levels.cpp
+    src/engine/LevelWatch.cpp
+    src/engine/AudioCheck.cpp
+    src/engine/Chapters.cpp
+    src/engine/FolderTemplate.cpp
+    src/engine/Checksums.cpp
+    src/engine/ContactSheet.cpp
+    src/engine/Json.cpp
+    src/engine/CaptureRecord.cpp
+    src/engine/Analysis.cpp
     src/engine/SelfTest.cpp
     src/backends/V4l2Backend.cpp
     src/backends/V4l2Logic.cpp
@@ -71,6 +82,7 @@ add_library(pingdub_engine STATIC
     src/backends/DeckLinkBackend.cpp
     src/backends/FakeBackends.cpp
     src/platform/RtKit.cpp
+    src/platform/Notify.cpp
     third_party/decklink/DeckLinkAPIDispatch.cpp
 )
 target_include_directories(pingdub_engine PUBLIC src)
@@ -85,8 +97,8 @@ target_link_libraries(pingdub_engine PUBLIC
 if(PINGDUB_BUILD_GUI)
     find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)
     file(GLOB PINGDUB_THEMES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} src/ui/themes/*.theme)
-    qt_add_executable(pingdub
-        src/main.cpp
+    # Everything but main() goes in a library, so the report test can build its window.
+    add_library(pingdub_ui STATIC
         src/devices/DeviceScanner.cpp
         src/devices/KnownDevices.cpp
         src/devices/Profiles.cpp
@@ -94,6 +106,9 @@ if(PINGDUB_BUILD_GUI)
         src/ui/PreviewWidget.cpp
         src/ui/Meters.cpp
         src/ui/Histogram.cpp
+        src/ui/Scopes.cpp
+        src/ui/LevelsPanel.cpp
+        src/ui/ReportWindow.cpp
         src/ui/StatsStrip.cpp
         src/ui/CaptionReadout.cpp
         src/ui/Theme.cpp
@@ -108,6 +123,15 @@ if(PINGDUB_BUILD_GUI)
         src/ui/dialogs/PreferencesDialog.cpp
         src/ui/dialogs/PreflightDialog.cpp
         src/ui/dialogs/SomagicSetupDialog.cpp
+        src/ui/dialogs/SetLevelsDialog.cpp
+        src/ui/dialogs/CapturePicker.cpp
+        src/ui/dialogs/VerifyDialog.cpp
+    )
+    set_target_properties(pingdub_ui PROPERTIES AUTOMOC ON)
+    target_include_directories(pingdub_ui PUBLIC src)
+    target_link_libraries(pingdub_ui PUBLIC pingdub_engine Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets)
+    qt_add_executable(pingdub
+        src/main.cpp
     )
     qt_add_resources(pingdub "themes"
         PREFIX "/"
@@ -117,7 +141,7 @@ if(PINGDUB_BUILD_GUI)
         PREFIX "/"
         BASE packaging
         FILES packaging/pingdub.svg)
-    target_link_libraries(pingdub PRIVATE pingdub_engine Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets)
+    target_link_libraries(pingdub PRIVATE pingdub_ui)
     target_include_directories(pingdub PRIVATE src)
     set_target_properties(pingdub PROPERTIES OUTPUT_NAME pingdub AUTOMOC ON AUTORCC ON)
     install(TARGETS pingdub RUNTIME DESTINATION bin)
@@ -130,7 +154,7 @@ endif()
 # --- tests -------------------------------------------------------------------
 if(PINGDUB_BUILD_TESTS)
     enable_testing()
-    foreach(t sync ring output v4l2_parse vbi somagic_parse)
+    foreach(t sync ring output v4l2_parse vbi somagic_parse analyzer audio_checks chapters templates checksums)
         add_executable(test_${t} tests/test_${t}.cpp)
         target_link_libraries(test_${t} PRIVATE pingdub_engine)
         target_include_directories(test_${t} PRIVATE tests src)
@@ -138,4 +162,13 @@ if(PINGDUB_BUILD_TESTS)
     endforeach()
     set_tests_properties(sync PROPERTIES TIMEOUT 1800)
     set_tests_properties(output PROPERTIES TIMEOUT 600)
+    set_tests_properties(audio_checks chapters checksums PROPERTIES TIMEOUT 900)
+    # The report test builds the real window, offscreen, so it needs the GUI.
+    if(PINGDUB_BUILD_GUI)
+        add_executable(test_report tests/test_report.cpp)
+        target_link_libraries(test_report PRIVATE pingdub_ui)
+        target_include_directories(test_report PRIVATE tests src)
+        add_test(NAME report COMMAND test_report)
+        set_tests_properties(report PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 600)
+    endif()
 endif()

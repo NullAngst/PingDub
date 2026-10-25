@@ -79,6 +79,7 @@ enum VideoFlags : uint32_t {
     VF_None = 0,
     VF_Error = 1u << 0,      // driver set V4L2_BUF_FLAG_ERROR: damaged, kept and logged
     VF_Fill = 1u << 1,       // synthetic slot from the stall watchdog, no data
+    VF_NoLock = 1u << 2,     // the driver reported no signal lock when this frame arrived
 };
 
 struct VideoFrame {

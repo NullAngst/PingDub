@@ -25,7 +25,8 @@ QString humanDuration(double s) {
 
 static const char* kKeys[] = {"State",      "Elapsed",   "Frames",   "Inserted",  "Dropped",   "Driver drops",
                               "Buffer ovf", "Xruns",     "A/V offset", "Drift",   "Data rate", "File size",
-                              "Disk free",  "Time left", "RAM buffer", "Signal",  "Detected"};
+                              "Disk free",  "Time left", "RAM buffer", "Signal",  "Detected",  "Levels",
+                              "Audio"};
 
 StatsStrip::StatsStrip(QWidget* parent) : QFrame(parent) {
     setObjectName("statsStrip");
@@ -33,7 +34,7 @@ StatsStrip::StatsStrip(QWidget* parent) : QFrame(parent) {
     g->setContentsMargins(8, 4, 8, 4);
     g->setHorizontalSpacing(14);
     g->setVerticalSpacing(0);
-    const int perRow = 9;
+    const int perRow = 10;
     int i = 0;
     for (const char* k : kKeys) {
         auto* key = new QLabel(tr(k), this);
@@ -56,6 +57,9 @@ StatsStrip::StatsStrip(QWidget* parent) : QFrame(parent) {
     m_values["Buffer ovf"]->setToolTip(tr("Frames lost because the RAM buffer was full"));
     m_values["A/V offset"]->setToolTip(tr("Measured offset between audio and video; positive means audio would play late"));
     m_values["Drift"]->setToolTip(tr("Resampling applied to audio to follow the video clock, in parts per million"));
+    m_values["Levels"]->setToolTip(tr("Crush, clip and chroma warnings: amber while more than the threshold of the picture "
+                                      "sits outside 16-235 or past the chroma limit. A warning, never a stop."));
+    m_values["Audio"]->setToolTip(tr("Hi-fi dropouts, dead channel and phase problems found so far. Reported only; the audio is never changed."));
 }
 
 void StatsStrip::set(const QString& key, const QString& value, Level level) {
@@ -75,7 +79,7 @@ void StatsStrip::showStats(const SessionStats& s, const VideoFormat& fmt, const 
     case SessionState::Closed: state = tr("No device"); break;
     case SessionState::Previewing: state = tr("Preview"); break;
     case SessionState::Capturing: state = tr("CAPTURING"); break;
-    case SessionState::Stopping: state = tr("Finishing"); break;
+    case SessionState::Stopping: state = s.finishing.empty() ? tr("Finishing") : tr("Finishing: %1").arg(QString::fromStdString(s.finishing)); break;
     }
     set("State", state, !s.error.empty() ? Bad : Normal);
     const SyncCounters& c = s.sync;
@@ -117,6 +121,18 @@ void StatsStrip::showStats(const SessionStats& s, const VideoFormat& fmt, const 
     const bool mismatch = !det.isEmpty() && !QString::fromStdString(standardName).contains(det) &&
                           !det.contains(QString::fromStdString(standardName));
     set("Detected", det.isEmpty() ? "-" : det, mismatch ? Warn : Normal);
+    if (!cap) {
+        set("Levels", "-");
+        set("Audio", "-");
+        return;
+    }
+    QStringList active;
+    static const char* names[3] = {"crush", "clip", "chroma"};
+    for (int k = 0; k < 3; ++k)
+        if (s.levels.active[k]) active << QString("%1 %2%").arg(names[k]).arg(s.levels.pct[k], 0, 'f', 1);
+    if (!active.isEmpty()) set("Levels", active.join(", "), Warn);
+    else set("Levels", s.levelEpisodes ? tr("%1 logged").arg(s.levelEpisodes) : tr("ok"));
+    set("Audio", QString::number(s.audioEvents), s.audioEvents ? Warn : Normal);
 }
 
 }  // namespace pd

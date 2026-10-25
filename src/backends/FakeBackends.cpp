@@ -58,15 +58,31 @@ std::vector<VideoControl> FakeVideoBackend::controls() {
     b.minimum = -64;
     b.maximum = 64;
     b.value = m_brightness;
-    return {b};
+    VideoControl c;
+    c.id = V4L2_CID_CONTRAST;
+    c.name = "Contrast";
+    c.minimum = 0;
+    c.maximum = 255;
+    c.defaultValue = 128;
+    c.value = m_contrast;
+    VideoControl s;
+    s.id = V4L2_CID_SATURATION;
+    s.name = "Saturation";
+    s.minimum = 0;
+    s.maximum = 255;
+    s.defaultValue = 128;
+    s.value = m_saturation;
+    return {b, c, s};
 }
 
 bool FakeVideoBackend::setControl(uint32_t id, int64_t value, std::string& err) {
-    if (id != V4L2_CID_BRIGHTNESS) {
+    if (id == V4L2_CID_BRIGHTNESS) m_brightness = int(std::clamp<int64_t>(value, -64, 64));
+    else if (id == V4L2_CID_CONTRAST) m_contrast = int(std::clamp<int64_t>(value, 0, 255));
+    else if (id == V4L2_CID_SATURATION) m_saturation = int(std::clamp<int64_t>(value, 0, 255));
+    else {
         err = "unknown control";
         return false;
     }
-    m_brightness = int(value);
     return true;
 }
 
@@ -114,11 +130,14 @@ void FakeVideoBackend::render(uint8_t* dst, uint64_t frame) {
                 Y = (bit < 32 && ((frame >> bit) & 1)) ? 235 : 16;
                 U = V = 128;
             }
-            const int yv = std::clamp(int(Y) + m_brightness, 16, 235);
+            // Like a decoder chip: the output can run past 16-235 and clips at its rails.
+            const int yv = std::clamp(16 + (int(Y) - 16) * m_contrast / 128 + m_brightness, 1, 254);
+            const int uv = std::clamp(128 + (int(U) - 128) * m_saturation / 128, 1, 254);
+            const int vv = std::clamp(128 + (int(V) - 128) * m_saturation / 128, 1, 254);
             row[2 * x + 0] = uint8_t(yv);
-            row[2 * x + 1] = U;
+            row[2 * x + 1] = uint8_t(uv);
             row[2 * x + 2] = uint8_t(yv);
-            row[2 * x + 3] = V;
+            row[2 * x + 3] = uint8_t(vv);
         }
     }
 }
@@ -206,7 +225,7 @@ int FakeAudioBackend::read(AudioChunk& out, int timeoutMs, bool& xrun, std::stri
         const int32_t s = int32_t(std::lrint(v * 2147483647.0));
         const int bits = sampleFmtBits(m_opt.fmt);
         const int32_t q = bits >= 32 ? s : int32_t(s & ~int32_t((1u << (32 - bits)) - 1));
-        for (int c = 0; c < m_opt.channels; ++c) d[i * size_t(m_opt.channels) + size_t(c)] = c ? -q : q;
+        for (int c = 0; c < m_opt.channels; ++c) d[i * size_t(m_opt.channels) + size_t(c)] = q;
     }
     out.frames = chunk;
     out.tsNs = m_start + int64_t(double(m_pos) * 1e9 / trueRate);

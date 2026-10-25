@@ -7,9 +7,13 @@
 // engine and the writer; the device keeps its lock and nothing restarts.
 #pragma once
 
+#include "Analysis.h"
 #include "BufferPool.h"
 #include "CaptureConfig.h"
+#include "Chapters.h"
 #include "EventLog.h"
+#include "FolderTemplate.h"
+#include "Levels.h"
 #include "Output.h"
 #include "RingBuffer.h"
 #include "SyncEngine.h"
@@ -44,6 +48,9 @@ struct SessionConfig {
     bool captureVbi = true;
     bool realtime = true;
     std::string audioDeviceName;       // for tags and logs
+    std::string profileName;           // for the {profile} folder token
+    AnalysisSettings analysis;         // crush/clip thresholds, chroma limit, audio checks
+    bool checksums = true;             // SHA-256 of each file when the capture ends
 };
 
 struct AudioLevels {
@@ -78,6 +85,11 @@ struct SessionStats {
     std::string vbiDescription;
     std::string stopReason;
     std::string error;
+    LevelWatch::Live levels;     // crush, clip and chroma episodes in progress
+    uint64_t levelEpisodes = 0;
+    uint64_t audioEvents = 0;
+    std::string finishing;       // what the stop is doing right now
+    std::string captureFolder;   // resolved folder of the running capture
 };
 
 struct CaptureSummary {
@@ -88,6 +100,13 @@ struct CaptureSummary {
     SyncCounters sync;
     double seconds = 0;
     std::string error;
+    std::string folder;                       // resolved output folder
+    std::string basePath;                     // folder/stem shared by the sidecars
+    std::vector<SegmentRecord> segments;
+    std::vector<Chapter> chapters;            // whole capture, timeline slots
+    std::map<std::string, std::string> sha256;  // file -> hex
+    CaptureAnalysisResult analysis;
+    std::string jsonPath() const { return basePath + ".json"; }
 };
 
 struct PreflightItem {
@@ -121,7 +140,7 @@ public:
     // Changing a control while previewing or capturing.
     bool setControl(uint32_t id, int64_t value, std::string& err);
 
-    std::vector<PreflightItem> preflight(double plannedSeconds);
+    std::vector<PreflightItem> preflight(double plannedSeconds, const std::string& label = {});
     bool startCapture(const std::string& label, std::string& err);
     // Stops, finalizes files and writes sidecars. Safe from any thread.
     CaptureSummary stopCapture(const std::string& reason = "stopped by user");
@@ -134,6 +153,25 @@ public:
     bool latestFrame(VideoFrame& out, uint64_t& serial);
     std::vector<std::string> warnings();
 
+    // Level Measure and Set Levels, in preview only.
+    bool startLevelMeasure(std::string& err);
+    void stopLevelMeasure();
+    bool levelMeasuring() const { return m_analysis.measuring(); }
+    LevelReading levelReading() { return m_analysis.reading(); }
+    void restartLevelMeasure(int settleMs = 300) { m_analysis.restartMeasure(settleMs); }
+    ProcAmp procAmp();
+    // Waveform monitor and vectorscope.
+    bool latestScope(ScopeFrame& out, uint64_t& serial) { return m_analysis.latestScope(out, serial); }
+    void setAnalysisSettings(const AnalysisSettings& a);
+
+    void setProfileName(const std::string& n) {
+        std::lock_guard<std::mutex> lk(m_captureMutex);
+        if (!m_capturing) m_cfg.profileName = n;
+    }
+    // Values for the folder tokens, as they would be for a capture started now.
+    TemplateValues templateValues(const std::string& label) const;
+    std::string lastCaptureFolder() const;
+
     // Called on the monitor thread when a capture ends without the user
     // (stop condition, device lost, disk full). The summary is final.
     std::function<void(const CaptureSummary&)> onAutoStop;
@@ -145,6 +183,27 @@ public:
                                           VideoCodec codec);
 
 private:
+    // Hands the timeline to the writer and to the analysis thread.
+    class TeeSink : public SyncSink {
+    public:
+        OutputWriter* out = nullptr;
+        AnalysisWorker* analysis = nullptr;
+        uint64_t audioPos = 0;
+        void syncVideo(const VideoFrame& f, int64_t slot, bool inserted) override {
+            analysis->pushTimeline(f, slot, inserted);
+            out->syncVideo(f, slot, inserted);
+        }
+        void syncAudio(const int32_t* s, size_t frames) override {
+            analysis->pushAudio(s, frames, audioPos);
+            audioPos += frames;
+            out->syncAudio(s, frames);
+        }
+        void syncEvent(const SyncEvent& ev) override {
+            if (ev.type == SyncEvent::Xrun) analysis->noteXrun(audioPos, ev.count);
+            out->syncEvent(ev);
+        }
+    };
+
     void videoLoop();
     void audioLoop();
     void syncLoop();
@@ -152,6 +211,8 @@ private:
     void warn(const std::string& w);
     std::map<std::string, std::string> finalTags(const CaptureSummary& s);
     void writeJsonSidecar(const CaptureSummary& s);
+    void setFinishing(const std::string& what);
+    std::string folderTemplate() const;
 
     SessionConfig m_cfg;
     std::unique_ptr<VideoBackend> m_video;
@@ -181,6 +242,14 @@ private:
     std::unique_ptr<OutputWriter> m_out;
     std::unique_ptr<EventLog> m_log;
     std::unique_ptr<VbiCapture> m_vbi;
+    TeeSink m_tee;
+    AnalysisWorker m_analysis;
+    ChapterBook m_chapters;
+    std::string m_folder;           // resolved folder of the current or last capture
+    mutable std::mutex m_folderMutex;
+    std::atomic<bool> m_lockedNow{true};
+    std::mutex m_finishMutex;
+    std::string m_finishStage;
     std::string m_basePath;  // folder/stem of the first file, for sidecars
     std::string m_label;
     int64_t m_captureStartReal = 0;

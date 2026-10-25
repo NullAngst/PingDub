@@ -10,6 +10,7 @@
 #include <QThread>
 #include <QSettings>
 
+#include <algorithm>
 #include <thread>
 
 namespace pd {
@@ -24,6 +25,13 @@ void AppSettings::load() {
     lastLabel = s.value("ui/last_label").toString();
     confirmStop = s.value("ui/confirm_stop", true).toBool();
     captureVbi = s.value("capture/vbi", true).toBool();
+    notifyAutoStop = s.value("capture/notify_auto_stop", true).toBool();
+    levelThresholdPct = std::clamp(s.value("levels/threshold_pct", 0.5).toDouble(), 0.01, 50.0);
+    levelSeconds = std::clamp(s.value("levels/seconds", 3.0).toDouble(), 0.5, 600.0);
+    chromaLimit = std::clamp(s.value("levels/chroma_limit", 112).toInt(), 60, 180);
+    scope = s.value("ui/scope", "histogram").toString();
+    parade = s.value("ui/parade", false).toBool();
+    lastCaptureFolder = s.value("ui/last_capture_folder").toString();
     stop.durationSec = s.value("stop/duration_min", 0).toDouble() * 60.0;
     stop.fileBytes = s.value("stop/file_gb", 0).toULongLong() << 30;
     stop.minFreeBytes = s.value("stop/min_free_gb", 2).toULongLong() << 30;
@@ -44,6 +52,13 @@ void AppSettings::save() const {
     s.setValue("ui/last_label", lastLabel);
     s.setValue("ui/confirm_stop", confirmStop);
     s.setValue("capture/vbi", captureVbi);
+    s.setValue("capture/notify_auto_stop", notifyAutoStop);
+    s.setValue("levels/threshold_pct", levelThresholdPct);
+    s.setValue("levels/seconds", levelSeconds);
+    s.setValue("levels/chroma_limit", chromaLimit);
+    s.setValue("ui/scope", scope);
+    s.setValue("ui/parade", parade);
+    s.setValue("ui/last_capture_folder", lastCaptureFolder);
     s.setValue("stop/duration_min", stop.durationSec / 60.0);
     s.setValue("stop/file_gb", qulonglong(stop.fileBytes >> 30));
     s.setValue("stop/min_free_gb", qulonglong(stop.minFreeBytes >> 30));
@@ -51,6 +66,14 @@ void AppSettings::save() const {
     s.setValue("stop/signal_lost_sec", stop.signalLostSec);
     s.setValue("stop/static_sec", stop.staticSec);
     s.setValue("stop/static_stddev", stop.staticStddev);
+}
+
+AnalysisSettings AppSettings::analysis() const {
+    AnalysisSettings a;
+    a.chromaLimit = chromaLimit;
+    a.watch.thresholdPct = levelThresholdPct;
+    a.watch.minSeconds = levelSeconds;
+    return a;
 }
 
 SessionController::SessionController(DeviceScanner* scanner, QObject* parent) : QObject(parent), m_scanner(scanner) {
@@ -122,6 +145,8 @@ SessionConfig SessionController::configFrom(const Profile& p) const {
     c.stop = m_settings.stop;
     c.captureVbi = m_settings.captureVbi;
     c.realtime = true;
+    c.profileName = p.name.toStdString();
+    c.analysis = m_settings.analysis();
     return c;
 }
 
@@ -231,6 +256,7 @@ bool SessionController::applyProfile(const Profile& p, QString& err) {
         return ok;
     }
     m_session.setRuntimeSettings(p.output, p.timing, m_settings.stop, m_settings.captureVbi);
+    m_session.setProfileName(p.name.toStdString());
     for (auto it = p.controls.begin(); it != p.controls.end(); ++it) {
         std::string e;
         m_session.setControl(it.key(), it.value(), e);
@@ -243,6 +269,16 @@ void SessionController::applyStopConditions(const StopConditions& s) {
     m_settings.stop = s;
     m_settings.save();
     m_session.setRuntimeSettings(m_profile.output, m_profile.timing, s, m_settings.captureVbi);
+}
+
+void SessionController::applyAnalysisSettings() { m_session.setAnalysisSettings(m_settings.analysis()); }
+
+bool SessionController::saveControlsToProfile() {
+    if (m_session.capturing() || !m_session.video()) return false;
+    for (const VideoControl& c : m_session.video()->controls())
+        if (!c.readOnly && c.type != VideoControl::Type::Button) m_profile.controls[c.id] = c.value;
+    // A first-run profile that was never saved gets written now under its name.
+    return saveProfileAs(m_profile.name.isEmpty() ? QStringLiteral("Default") : m_profile.name);
 }
 
 bool SessionController::saveProfileAs(const QString& name) {
@@ -261,6 +297,7 @@ bool SessionController::saveProfileAs(const QString& name) {
     }
     if (!m_store.save(p)) return false;
     m_profile = p;
+    m_session.setProfileName(name.toStdString());
     if (m_store.defaultFor(m_deviceKey).isEmpty()) m_store.setDefault(m_deviceKey, name);
     return true;
 }
