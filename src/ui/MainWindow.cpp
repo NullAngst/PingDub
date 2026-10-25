@@ -37,6 +37,7 @@
 #include <QMessageBox>
 #include <QProgressDialog>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QScreen>
 #include <QSettings>
 #include <QShortcut>
@@ -239,6 +240,9 @@ void MainWindow::buildUi() {
     auto* bl = new QHBoxLayout(m_banner);
     m_bannerText = new QLabel(m_banner);
     m_bannerText->setWordWrap(true);
+    m_bannerText->setTextFormat(Qt::RichText);
+    m_bannerText->setOpenExternalLinks(true);
+    m_bannerText->setTextInteractionFlags(Qt::TextBrowserInteraction);
     m_bannerButton = new QPushButton(tr("Diagnostics"), m_banner);
     connect(m_bannerButton, &QPushButton::clicked, this, &MainWindow::openDiagnostics);
     bl->addWidget(m_bannerText, 1);
@@ -477,7 +481,15 @@ void MainWindow::updateBanner() {
         lines << tr("%1 uses an experimental backend that has not been tested on real hardware.").arg(QString::fromStdString(d->name));
     for (const auto& w : m_ctl->session().warnings()) lines << QString::fromStdString(w);
     m_banner->setVisible(!lines.isEmpty());
-    m_bannerText->setText(lines.join("\n"));
+    // Links in a message (a driver's repository) are clickable.
+    static const QRegularExpression url(QStringLiteral("(https?://[^\\s]*[^\\s.,;)])"));
+    QStringList html;
+    for (const QString& l : lines) {
+        QString h = l.toHtmlEscaped();
+        h.replace(url, QStringLiteral("<a style=\"color: #F2CC60;\" href=\"\\1\">\\1</a>"));
+        html << h;
+    }
+    m_bannerText->setText(html.join("<br>"));
 }
 
 void MainWindow::onDeviceChanged() {

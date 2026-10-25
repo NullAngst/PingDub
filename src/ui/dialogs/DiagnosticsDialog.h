@@ -4,6 +4,7 @@
 #include <QDialog>
 
 class QPlainTextEdit;
+class QPushButton;
 
 namespace pd {
 
@@ -21,6 +22,7 @@ private:
     void refresh();
     SessionController* m_ctl;
     QPlainTextEdit* m_text;
+    QPushButton* m_driverPage = nullptr;
 };
 
 }  // namespace pd

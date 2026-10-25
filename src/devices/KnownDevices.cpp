@@ -8,8 +8,8 @@ const std::vector<KnownDevice>& knownDevices() {
     static const std::vector<KnownDevice> list = {
         {B::USB, 0x04bb, 0x0532, "I-O Data GV-USB2", "", "gvusb2-video,gvusb2_video,gvusb2-sound,gvusb2_sound",
          false, "https://github.com/NullAngst/GV-USB2-Driver",
-         "Out-of-tree driver: clone it and run scripts/install.sh (README, section 'GV-USB2 driver'). "
-         "Run scripts/update.sh after every kernel update.",
+         "Out-of-tree driver: clone NullAngst/GV-USB2-Driver and run scripts/install.sh "
+         "(PingDub README, section 'GV-USB2 driver'). Run scripts/update.sh after every kernel update.",
          {0, 1}},
         {B::USB, 0x0fd9, 0x0037, "Elgato Video Capture V2", "CX23102", "cx231xx", true, "",
          "Mainline cx231xx driver. Composite works; S-Video showed color noise on the stock driver in testing "

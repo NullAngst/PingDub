@@ -6,11 +6,13 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QDesktopServices>
 #include <QDialogButtonBox>
 #include <QFontDatabase>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSysInfo>
+#include <QUrl>
 #include <QVBoxLayout>
 
 extern "C" {
@@ -32,6 +34,11 @@ DiagnosticsDialog::DiagnosticsDialog(SessionController* ctl, QWidget* parent) : 
     auto* copy = bb->addButton(tr("Copy"), QDialogButtonBox::ActionRole);
     auto* refreshBtn = bb->addButton(tr("Refresh"), QDialogButtonBox::ActionRole);
     auto* somagic = bb->addButton(tr("Somagic setup..."), QDialogButtonBox::ActionRole);
+    // Out-of-tree drivers (the GV-USB2): open the driver's repository.
+    m_driverPage = bb->addButton(tr("Driver page"), QDialogButtonBox::ActionRole);
+    connect(m_driverPage, &QPushButton::clicked, this, [this] {
+        for (const auto& s : m_ctl->scanner()->driverSources()) QDesktopServices::openUrl(QUrl(QString::fromStdString(s.link)));
+    });
     connect(copy, &QPushButton::clicked, this, [this] { QApplication::clipboard()->setText(m_text->toPlainText()); });
     connect(refreshBtn, &QPushButton::clicked, this, [this] {
         m_ctl->scanner()->rescan();
@@ -87,6 +94,13 @@ QString DiagnosticsDialog::report(SessionController* ctl) {
     return r;
 }
 
-void DiagnosticsDialog::refresh() { m_text->setPlainText(report(m_ctl)); }
+void DiagnosticsDialog::refresh() {
+    m_text->setPlainText(report(m_ctl));
+    const auto& src = m_ctl->scanner()->driverSources();
+    m_driverPage->setVisible(!src.empty());
+    QStringList tips;
+    for (const auto& s : src) tips << QString::fromStdString(s.name + ": " + s.link);
+    m_driverPage->setToolTip(tips.join("\n"));
+}
 
 }  // namespace pd

@@ -110,6 +110,7 @@ static uint16_t hexAttr(udev_device* d, const char* attr) {
 
 void DeviceScanner::scanMissing() {
     m_missing.clear();
+    m_sources.clear();
     m_report.clear();
     if (!m_udev) return;
     for (const char* subsystem : {"usb", "pci"}) {
@@ -176,6 +177,16 @@ void DeviceScanner::scanMissing() {
                     if (!want.empty() && want.find(norm(b)) != std::string::npos) ok = true;
             }
             if (!ok) m_missing.push_back({k->name, ids, missingDriverMessage(*k)});
+            // Out-of-tree drivers: where the source lives, bound or not, since
+            // it has to be rebuilt after every kernel update.
+            if (!k->mainline && k->link && *k->link) {
+                m_report.push_back(std::string("    driver source: ") + k->link);
+                bool seen = false;
+                for (const auto& s : m_sources) seen |= s.link == k->link;
+                if (!seen) m_sources.push_back({k->name, k->link});
+            } else if (ok && k->notes && *k->notes) {
+                m_report.push_back(std::string("    note: ") + k->notes);
+            }
             udev_device_unref(d);
         }
         udev_enumerate_unref(e);

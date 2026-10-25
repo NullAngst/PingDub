@@ -41,6 +41,12 @@ struct MissingDriver {
     std::string message;
 };
 
+// A connected device whose driver lives outside the kernel, and where to get it.
+struct DriverSource {
+    std::string name;
+    std::string link;
+};
+
 class DeviceScanner : public QObject {
     Q_OBJECT
 public:
@@ -50,6 +56,7 @@ public:
     void rescan();
     const std::vector<CaptureDevice>& devices() const { return m_devices; }
     const std::vector<MissingDriver>& missing() const { return m_missing; }
+    const std::vector<DriverSource>& driverSources() const { return m_sources; }
     std::string hardwareReport() const;
 
     static std::unique_ptr<VideoBackend> openVideo(const CaptureDevice& d, std::string& err);
@@ -67,6 +74,7 @@ private:
     QTimer m_debounce;
     std::vector<CaptureDevice> m_devices;
     std::vector<MissingDriver> m_missing;
+    std::vector<DriverSource> m_sources;
     std::vector<std::string> m_report;
 };
 
