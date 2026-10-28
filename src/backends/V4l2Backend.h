@@ -33,7 +33,9 @@ public:
     std::vector<VideoStandardInfo> standards() override;
     uint64_t currentStandard() override;
     bool setStandard(uint64_t id, std::string& err) override;
-    std::string detectStandard();
+    // False when the driver refuses QUERYSTD. True with an empty name when it
+    // answers but cannot narrow the standard down.
+    bool detectStandard(std::string& name);
 
     std::vector<VideoFormatOption> formats() override;
     bool configure(PixFmt pixfmt, VideoFormat& out, std::string& err) override;

@@ -27,6 +27,9 @@ struct FieldDecision {
     bool supported = true;      // V4L2_FIELD_ALTERNATE etc. cannot be used
 };
 FieldDecision fieldFromV4l2(uint32_t v4l2Field, bool lines525);
+// The field type a device really sends, for drivers known to report the wrong
+// one. Returns `v4l2Field` unchanged for everything else.
+uint32_t correctedField(const std::string& driver, uint32_t v4l2Field);
 const char* v4l2FieldName(uint32_t f);
 
 // Pixel aspect from how the device samples a line. BT.601's 13.5 MHz gives
@@ -40,6 +43,10 @@ struct StdInfo {
     bool lines525;
 };
 StdInfo describeStd(uint64_t v4l2StdId);
+// A QUERYSTD answer worth showing: the name when the mask fits one standard
+// or family, "" when the driver could not narrow it down (no signal, still
+// detecting, or every standard it supports).
+std::string detectedStdName(uint64_t v4l2StdId);
 bool stdIs525(uint64_t v4l2StdId);
 
 struct Size {

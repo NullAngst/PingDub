@@ -245,7 +245,12 @@ bool AlsaBackend::open(int preferRate, AudioFormat& out, std::string& err) {
         close();
         return false;
     }
-    // ~10 ms periods, ~500 ms buffer.
+    // ~10 ms periods, ~500 ms buffer, never fewer than three periods: with
+    // two, one late wakeup overruns. Devices with a large minimum period
+    // (the GV-USB2's is 32 ms) round the period up.
+    unsigned periodsMin = 3;
+    snd_pcm_hw_params_set_periods_min(m_h, hw, &periodsMin, &dir);
+    dir = 0;
     snd_pcm_uframes_t period = rate / 100;
     snd_pcm_hw_params_set_period_size_near(m_h, hw, &period, &dir);
     snd_pcm_uframes_t buffer = rate / 2;

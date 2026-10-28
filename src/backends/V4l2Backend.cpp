@@ -138,10 +138,12 @@ bool V4l2Backend::setStandard(uint64_t id, std::string& err) {
     return true;
 }
 
-std::string V4l2Backend::detectStandard() {
+bool V4l2Backend::detectStandard(std::string& name) {
+    name.clear();
     v4l2_std_id id = 0;
-    if (m_fd < 0 || xioctl(m_fd, VIDIOC_QUERYSTD, &id) < 0 || !id) return {};
-    return describeStd(id).name;
+    if (m_fd < 0 || xioctl(m_fd, VIDIOC_QUERYSTD, &id) < 0) return false;
+    name = detectedStdName(id);
+    return true;
 }
 
 std::vector<VideoFormatOption> V4l2Backend::formats() {
@@ -252,7 +254,8 @@ bool V4l2Backend::configure(PixFmt pixfmt, VideoFormat& out, std::string& err) {
         err = "driver refused " + fourccString(fourcc) + " and offered " + fourccString(f.fmt.pix.pixelformat);
         return false;
     }
-    m_field = fieldFromV4l2(f.fmt.pix.field, lines525);
+    const uint32_t field = correctedField(m_driver, f.fmt.pix.field);
+    m_field = fieldFromV4l2(field, lines525);
     if (!m_field.supported) {
         err = std::string("driver delivers fields as ") + v4l2FieldName(f.fmt.pix.field) +
               ", which PingDub cannot weave losslessly yet";
@@ -263,6 +266,9 @@ bool V4l2Backend::configure(PixFmt pixfmt, VideoFormat& out, std::string& err) {
     std::snprintf(sz, sizeof sz, "format %ux%u %s, field %s", f.fmt.pix.width, f.fmt.pix.height,
                   fourccString(fourcc).c_str(), v4l2FieldName(f.fmt.pix.field));
     m_cropSummary += sz;
+    if (field != f.fmt.pix.field)
+        m_cropSummary += std::string(" (taken as ") + v4l2FieldName(field) +
+                         ": this driver reports the wrong field type; NullAngst/GV-USB2-Driver fixes it)";
     if (bounds.w && (int(f.fmt.pix.width) != bounds.w || int(f.fmt.pix.height) != bounds.h))
         m_cropSummary += " (differs from crop bounds: the driver scales)";
 
@@ -385,15 +391,15 @@ SignalStatus V4l2Backend::signalStatus() {
         s.noHLock = in.status & V4L2_IN_ST_NO_H_LOCK;
     }
     // Many drivers answer QUERYSTD while streaming; some refuse with EBUSY.
-    // Fall back to what was detected before streaming started.
-    s.detected = detectStandard();
-    if (s.detected.empty()) s.detected = m_detectedBeforeStart;
+    // Only a refusal falls back to what was detected before streaming
+    // started. An answer of "can't tell" (no signal) means unknown now.
+    if (!detectStandard(s.detected)) s.detected = m_detectedBeforeStart;
     return s;
 }
 
 bool V4l2Backend::start(int bufferCount, std::string& err) {
     if (m_streaming) return true;
-    m_detectedBeforeStart = detectStandard();
+    detectStandard(m_detectedBeforeStart);
     v4l2_requestbuffers rb{};
     rb.count = uint32_t(std::clamp(bufferCount, 2, 64));
     rb.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -588,9 +594,16 @@ std::string V4l2Backend::diagnostics() {
         std::snprintf(id, sizeof id, "0x%016llx", (unsigned long long)s.id);
         o << "  " << s.name << "  " << id << "  " << s.fps.num << "/" << s.fps.den << (s.id == cur ? "  (current)" : "") << "\n";
     }
-    if (!m_streaming) {
-        const std::string det = detectStandard();
-        o << "  Detected      : " << (det.empty() ? "unknown (QUERYSTD unsupported or no signal)" : det) << "\n";
+    {
+        // Some drivers (the GV-USB2's among them) can only tell while streaming.
+        std::string det;
+        const bool answered = detectStandard(det);
+        o << "  Detected      : "
+          << (!answered ? "unknown (driver refuses QUERYSTD)"
+                        : det.empty() ? (m_streaming ? "unknown (no signal, or still detecting)"
+                                                     : "unknown (the driver may only tell while streaming)")
+                                      : det)
+          << "\n";
     }
     o << "Formats:\n";
     for (const auto& f : formats()) {

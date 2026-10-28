@@ -132,38 +132,65 @@ bool stdIs525(uint64_t id) {
     return false;
 }
 
+namespace {
+
+struct StdName {
+    v4l2_std_id mask;
+    const char* name;
+};
+// Narrow names first, families last, so the first entry that covers a whole
+// mask is its most specific name.
+const StdName kStdNames[] = {
+    {V4L2_STD_NTSC_M, "NTSC-M"},       {V4L2_STD_NTSC_M_JP, "NTSC-J"}, {V4L2_STD_NTSC_443, "NTSC-443"},
+    {V4L2_STD_NTSC_M_KR, "NTSC-M-KR"}, {V4L2_STD_PAL_M, "PAL-M"},      {V4L2_STD_PAL_60, "PAL-60"},
+    {V4L2_STD_PAL_N, "PAL-N"},         {V4L2_STD_PAL_Nc, "PAL-Nc"},    {V4L2_STD_PAL_BG, "PAL-B/G"},
+    {V4L2_STD_PAL_DK, "PAL-D/K"},      {V4L2_STD_PAL_I, "PAL-I"},      {V4L2_STD_PAL_H, "PAL-H"},
+    {V4L2_STD_SECAM_B | V4L2_STD_SECAM_G | V4L2_STD_SECAM_H, "SECAM-B/G/H"},
+    {V4L2_STD_SECAM_DK, "SECAM-D/K"},  {V4L2_STD_SECAM_L, "SECAM-L"},  {V4L2_STD_SECAM_LC, "SECAM-L'"},
+    {V4L2_STD_NTSC, "NTSC"},           {V4L2_STD_PAL, "PAL"},          {V4L2_STD_SECAM, "SECAM"},
+};
+
+// The name of the one entry that covers every bit of `s`, or nullptr.
+const char* coveringName(v4l2_std_id s) {
+    if (!s) return nullptr;
+    for (const StdName& n : kStdNames)
+        if ((s & ~n.mask) == 0) return n.name;
+    return nullptr;
+}
+
+}  // namespace
+
 StdInfo describeStd(uint64_t id) {
     const v4l2_std_id s = v4l2_std_id(id);
     StdInfo i;
     i.lines525 = (s & V4L2_STD_525_60) != 0 && !(s & V4L2_STD_625_50);
     if (s & V4L2_STD_525_60 && s & V4L2_STD_625_50) i.lines525 = false;  // ambiguous masks: assume 625
     i.fps = i.lines525 ? Rational{30000, 1001} : Rational{25, 1};
-    struct N {
-        v4l2_std_id mask;
-        const char* name;
-    };
-    static const N names[] = {
-        {V4L2_STD_NTSC_M, "NTSC-M"},       {V4L2_STD_NTSC_M_JP, "NTSC-J"}, {V4L2_STD_NTSC_443, "NTSC-443"},
-        {V4L2_STD_NTSC_M_KR, "NTSC-M-KR"}, {V4L2_STD_PAL_M, "PAL-M"},      {V4L2_STD_PAL_60, "PAL-60"},
-        {V4L2_STD_PAL_N, "PAL-N"},         {V4L2_STD_PAL_Nc, "PAL-Nc"},    {V4L2_STD_PAL_BG, "PAL-B/G"},
-        {V4L2_STD_PAL_DK, "PAL-D/K"},      {V4L2_STD_PAL_I, "PAL-I"},      {V4L2_STD_PAL_H, "PAL-H"},
-        {V4L2_STD_SECAM_B | V4L2_STD_SECAM_G | V4L2_STD_SECAM_H, "SECAM-B/G/H"},
-        {V4L2_STD_SECAM_DK, "SECAM-D/K"},  {V4L2_STD_SECAM_L, "SECAM-L"},  {V4L2_STD_SECAM_LC, "SECAM-L'"},
-        {V4L2_STD_NTSC, "NTSC"},           {V4L2_STD_PAL, "PAL"},          {V4L2_STD_SECAM, "SECAM"},
-    };
-    for (const N& n : names) {
-        if (s && (s & ~n.mask) == 0) {
-            i.name = n.name;
-            return i;
-        }
+    if (const char* n = coveringName(s)) {
+        i.name = n;
+        return i;
     }
-    for (const N& n : names)
+    for (const StdName& n : kStdNames)
         if (s & n.mask) {
             i.name = n.name;
             return i;
         }
     i.name = "unknown";
     return i;
+}
+
+std::string detectedStdName(uint64_t id) {
+    const char* n = coveringName(v4l2_std_id(id));
+    return n ? n : "";
+}
+
+uint32_t correctedField(const std::string& driver, uint32_t field) {
+    // The GV-USB2's TW9910 sends the odd field, on rows 0, 2, 4..., first.
+    // The upstream gvusb2 driver reports plain INTERLACED, which V4L2 defines
+    // as bottom field first for NTSC, so captures got tagged BFF. The
+    // NullAngst driver reports INTERLACED_TB and needs no correction.
+    if (driver == "gvusb2" && field == V4L2_FIELD_INTERLACED) return V4L2_FIELD_INTERLACED_TB;
+    return field;
 }
 
 Size chooseFrameSize(const Size& bounds, const std::vector<Size>& offered, bool lines525) {

@@ -45,6 +45,8 @@ I use apt, so in my case `install.sh -d` pulls `linux-headers-$(uname -r)`. It d
 
 Use a driver build from 2026-10-24 or later. Earlier builds stamped each frame with the time a 32 ms USB transfer finished instead of when the frame ended, and didn't report frames they lost. PingDub copes with the coarse timestamps (see Sync below), but the newer driver gives it exact ones.
 
+Builds from 2026-10-28 on report the right field order (top field first) and the signal state: the Signal and Detected readouts follow the tape, so a blank stretch shows "no signal" and the detected standard comes from the decoder. Older builds and the upstream driver report the field order wrong, so PingDub corrects it for any driver named gvusb2 and says so in **Tools > Diagnostics**. Files captured before that are tagged bottom field first, in the container and in every FFV1 slice. Re-encoding fixes both and stays lossless: `ffmpeg -i old.mkv -map 0 -vf setfield=tff -c:v ffv1 -level 3 -slicecrc 1 -c:a copy fixed.mkv`.
+
 The GV-USB2 is a Japanese device, and NTSC-J has no 7.5 IRE setup. A US tape captured as NTSC-J has lifted blacks. PingDub defaults to NTSC-M unless you pick otherwise.
 
 ## Supported hardware

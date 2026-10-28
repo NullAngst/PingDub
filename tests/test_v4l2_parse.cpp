@@ -35,6 +35,27 @@ TEST_CASE("field order from the driver's field type") {
     CHECK(fieldFromV4l2(V4L2_FIELD_NONE, true).order == FieldOrder::Progressive);
 }
 
+TEST_CASE("the upstream gvusb2 driver's field type is corrected") {
+    CHECK(correctedField("gvusb2", V4L2_FIELD_INTERLACED) == V4L2_FIELD_INTERLACED_TB);
+    CHECK(fieldFromV4l2(correctedField("gvusb2", V4L2_FIELD_INTERLACED), true).order == FieldOrder::TFF);
+    // The fixed driver already says TB; other drivers are left alone.
+    CHECK(correctedField("gvusb2", V4L2_FIELD_INTERLACED_TB) == V4L2_FIELD_INTERLACED_TB);
+    CHECK(correctedField("em28xx", V4L2_FIELD_INTERLACED) == V4L2_FIELD_INTERLACED);
+}
+
+TEST_CASE("detected standard: only answers that narrow it down") {
+    CHECK(detectedStdName(V4L2_STD_NTSC_M) == "NTSC-M");
+    CHECK(detectedStdName(V4L2_STD_NTSC_M | V4L2_STD_NTSC_M_JP) == "NTSC");
+    CHECK(detectedStdName(V4L2_STD_PAL) == "PAL");
+    CHECK(detectedStdName(V4L2_STD_PAL_M) == "PAL-M");
+    CHECK(detectedStdName(V4L2_STD_SECAM) == "SECAM");
+    // No signal, still detecting, or "anything I support".
+    CHECK(detectedStdName(V4L2_STD_UNKNOWN).empty());
+    CHECK(detectedStdName(V4L2_STD_525_60).empty());
+    CHECK(detectedStdName(V4L2_STD_625_50).empty());
+    CHECK(detectedStdName(V4L2_STD_ALL).empty());
+}
+
 TEST_CASE("pixel aspect from sampling") {
     CHECK(sarFor(720, true) == Rational(10, 11));
     CHECK(sarFor(704, true) == Rational(10, 11));
