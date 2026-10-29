@@ -2,13 +2,57 @@
 
 PingDub captures analog video (composite or S-video) on Linux and writes the untouched video and audio to disk with correct timing, for anyone archiving VHS, S-VHS, Hi8, Betamax, LaserDisc, camcorders or old consoles.
 
-It is the capture mode of VirtualDub 1.10.4 and VirtualDub2, rewritten natively for Linux. No VirtualDub code is reused. What carries over is the feature set (preview, audio meters, histogram, timing control, auto-stop conditions, spill to another drive) and the timing model. On top of that, PingDub helps get a tape into a good master file and proves it stayed good: it measures and sets levels before the capture, warns about crushed blacks and hi-fi audio faults during it, and leaves a report, chapters, a contact sheet and checksums after it. Nothing it does changes the picture or sound after capture. Deinterlacing, cropping, denoise and encoding to something small happen later, in whatever tool you pick; I use HandBrake.
+It is the capture mode of VirtualDub 1.10.4 and VirtualDub2, rewritten natively for Linux. No VirtualDub code is reused. What carries over is the feature set (preview, audio meters, histogram, timing control, auto-stop conditions, spill to another drive) and the timing model. On top of that, PingDub helps get a tape into a good master file and proves it stayed good: it measures and sets levels before the capture, warns about crushed blacks and hi-fi audio faults during it, and leaves a report, chapters, a contact sheet and checksums after it.
 
-Three rules drive everything:
+Nothing it does changes the picture or sound after capture. That part is the job of its companion app, [UinDub](https://github.com/NullAngst/UinDub).
+
+## Why use it
+
+A tape gets played a limited number of times before it gives out. Every pass wears the oxide, and an old tape can shed or snap on any one of them. So the capture is the one step you want to do once, and do right. Everything after it can be redone from the file as many times as you like.
+
+Why not just use OBS? Because OBS is built for streaming. It converts every frame into its own canvas format and color space, scales to the canvas size, and records at its own output frame rate. That's fine for a stream. For an archive, it means the file holds OBS's idea of the picture, and you cannot get back what the capture chip actually sent.
+
+Why not a raw `ffmpeg -f v4l2 ... -f alsa ...` command? It can work, and I respect anyone who has a command line they trust. But the video and audio run on separate clocks that drift apart, a dropped frame goes by without a word, and you find out about crushed blacks or a dead audio channel when you watch the file a week later. By then the tape is back on the shelf.
+
+PingDub is for the case where you want the master to be as close to the signal as the hardware allows, and you want to know it's good before you put the tape away. Three rules drive everything:
 
 1. **Bit-exact video.** Pixels the driver hands over reach the file unchanged. No scaling, cropping, deinterlacing or color conversion. Packed YUYV is repacked into planar 4:2:2 for the encoder, which is lossless.
 2. **Correct timing.** Every frame is accounted for, field order is recorded, and audio is in sync at the end of a 6-hour tape.
 3. **Nothing hidden.** Dropped frames, inserted frames, signal loss, buffer fill, clock drift and levels are on screen during capture and written to a log afterward.
+
+The tradeoff is size. A lossless SD master is 35 to 90 GB for a 2-hour tape, and it's interlaced, so it looks combed on a modern screen. It's a master, not something you watch. That's where UinDub comes in.
+
+## PingDub and UinDub
+
+PingDub and UinDub are two halves of one workflow. The names come from the same place: PingDub is from Pinguin, and UinDub is the other half.
+
+| | PingDub | UinDub |
+|---|---|---|
+| Job | Capture the tape into a lossless master | Turn that master into a file you watch |
+| Touches the picture | Never, after the capture chip | Yes, on a new file |
+| Input | Capture device (V4L2, ALSA, Somagic, DeckLink) | A PingDub `.mkv` or any interlaced SD file |
+| Output | FFV1 + PCM in MKV, with sidecars | x265 10-bit RF 15 + FLAC in MKV by default |
+| Repo | [NullAngst/PingDub](https://github.com/NullAngst/PingDub) | [NullAngst/UinDub](https://github.com/NullAngst/UinDub) |
+
+[UinDub](https://github.com/NullAngst/UinDub) opens a PingDub capture read-only, along with its sidecars (chapters, captions, the capture log, checksums), keeps every setting in a project folder, and writes a new file. The master stays as it was. What it does to that new file:
+
+- **Edge Lock**, a software TBC, off by default. It measures each line's horizontal position against a reference edge and shifts it back, which straightens the wobble and warble you get from worn tape or a deck with no TBC of its own.
+- **Deinterlace** with QTGMC (bundled), bwdif, yadif, or IVTC for film transfers.
+- **Color and levels**: brightness, contrast, gamma, black and white point, saturation, hue, lift/gamma/gain, chroma delay.
+- **Crop**, with a safe-crop guide built from Edge Lock's shifts and PingDub's head-switching lines.
+- **Trim and cut** spans from anywhere in the tape, with chapters and captions moving with the picture.
+- **Encode** to x265, x264, SVT-AV1 or FFV1, with FLAC, Opus, AAC or PCM audio.
+
+It also reads PingDub's JSON for the field order, so GV-USB2 captures with the old wrong tag (see below) come out right without a re-encode first.
+
+The flow for a tape, start to finish:
+
+1. Capture it in PingDub. Check the report says Clean, or look at the spots it lists.
+2. Put the tape away. You're done with it.
+3. Open the `.mkv` in UinDub, fix what needs fixing, render.
+4. Keep the PingDub master as the archive copy and the UinDub file as the one you watch.
+
+You don't have to use UinDub. The master is a standard MKV tagged so HandBrake, or whichever tool you prefer, reads field order, aspect and color with no manual settings. But UinDub is the one that knows about PingDub's sidecars, and HandBrake has no TBC.
 
 ## Prerequisites
 
@@ -26,6 +70,7 @@ Three rules drive everything:
 6. Type a tape label, press play, press **F5**.
 7. Press **Esc** to stop. After the first minute it asks first, so a stray key does not end a 4-hour capture.
 8. The capture report opens. "Clean" means nothing needs a look; "Review 4 spots" tells you where to look.
+9. Open the `.mkv` in [UinDub](https://github.com/NullAngst/UinDub) when you want a file to watch.
 
 Files land in `~/Videos/PingDub/` as `YYYY-MM-DD_HHMMSS_<label>.mkv` with sidecars next to them. Set the folder to `~/Videos/PingDub/{title}/` in **Capture > Output** and each tape gets its own folder (see [Output folder templates](#output-folder-templates)).
 
@@ -45,7 +90,7 @@ I use apt, so in my case `install.sh -d` pulls `linux-headers-$(uname -r)`. It d
 
 Use a driver build from 2026-10-24 or later. Earlier builds stamped each frame with the time a 32 ms USB transfer finished instead of when the frame ended, and didn't report frames they lost. PingDub copes with the coarse timestamps (see Sync below), but the newer driver gives it exact ones.
 
-Builds from 2026-10-28 on report the right field order (top field first) and the signal state: the Signal and Detected readouts follow the tape, so a blank stretch shows "no signal" and the detected standard comes from the decoder. Older builds and the upstream driver report the field order wrong, so PingDub corrects it for any driver named gvusb2 and says so in **Tools > Diagnostics**. Files captured before that are tagged bottom field first, in the container and in every FFV1 slice. Re-encoding fixes both and stays lossless: `ffmpeg -i old.mkv -map 0 -vf setfield=tff -c:v ffv1 -level 3 -slicecrc 1 -c:a copy fixed.mkv`.
+Builds from 2026-10-28 on report the right field order (top field first) and the signal state: the Signal and Detected readouts follow the tape, so a blank stretch shows "no signal" and the detected standard comes from the decoder. Older builds and the upstream driver report the field order wrong, so PingDub corrects it for any driver named gvusb2 and says so in **Tools > Diagnostics**. Files captured before that are tagged bottom field first, in the container and in every FFV1 slice. Re-encoding fixes both and stays lossless: `ffmpeg -i old.mkv -map 0 -vf setfield=tff -c:v ffv1 -level 3 -slicecrc 1 -c:a copy fixed.mkv`. If the file is only going through UinDub, you can skip that, since UinDub knows about the bad tag and falls back to a comb test.
 
 The GV-USB2 is a Japanese device, and NTSC-J has no 7.5 IRE setup. A US tape captured as NTSC-J has lifted blacks. PingDub defaults to NTSC-M unless you pick otherwise.
 
@@ -256,7 +301,7 @@ A grid of thumbnails saved next to the MKV shows what's on a tape without openin
 
 ## What ends up on disk
 
-Default output is FFV1 4:2:2 video and PCM audio in Matroska, tagged so HandBrake reads field order, aspect and color with no manual settings.
+Default output is FFV1 4:2:2 video and PCM audio in Matroska, tagged so UinDub, HandBrake or whichever tool you prefer reads field order, aspect and color with no manual settings.
 
 | Codec | Size | Notes |
 |---|---|---|
@@ -292,7 +337,7 @@ Segments (by size or duration, in Output) are frame- and sample-continuous, so j
 
 ### Frame area
 
-This is the master file, so PingDub asks the driver for its full crop bounds and the largest unscaled size for the standard (720x486 over 720x480 when offered) and records no crop metadata. What is in the file is what gets shown. Crop in HandBrake.
+This is the master file, so PingDub asks the driver for its full crop bounds and the largest unscaled size for the standard (720x486 over 720x480 when offered) and records no crop metadata. What is in the file is what gets shown. Crop in UinDub, or whichever tool you prefer.
 
 ## Timing and sync
 
@@ -390,4 +435,4 @@ On the GV-USB2, still to do by hand: Level Measure on a real tape, a 2-hour capt
 
 GPL-3.0-or-later. The Somagic protocol code is ported from somagic-easycap (GPL-2.0-or-later). zvbi is GPL-2.0-or-later. The vendored DeckLink SDK headers in `third_party/decklink/` carry Blackmagic's permissive license, included in each file.
 
-Now PingDub is installed, your device is picked up with its audio, levels are measured and set before the tape rolls, captures land in their own folders as lossless FFV1 with every frame accounted for, chapters, a contact sheet and checksums, the report tells you whether to re-run a tape, and Verify proves years later that nothing changed. Tinker with profiles, folder templates, thresholds and themes as you see fit.
+Now PingDub is installed, your device is picked up with its audio, levels are measured and set before the tape rolls, captures land in their own folders as lossless FFV1 with every frame accounted for, chapters, a contact sheet and checksums, the report tells you whether to re-run a tape, and Verify proves years later that nothing changed. The tape goes back on the shelf, and UinDub takes the master from there. Tinker with profiles, folder templates, thresholds and themes as you see fit.
