@@ -43,7 +43,7 @@ jobs:
             libfontconfig1-dev libfreetype-dev libx11-xcb-dev libxcb1-dev libxcb-cursor0 libxcb-icccm4 \
             libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
             libxcb-xkb1 libxcb-xfixes0 libxcb-sync1 libxcb-shm0 libxcb-util1 libglib2.0-0 \
-            xvfb xauth zsync desktop-file-utils
+            xvfb xauth zsync desktop-file-utils librsvg2-bin
 
       # Steps 4 to 11 of the spec live in one script so they run locally too.
       - name: Build Qt deps, FFmpeg, libsoxr, zvbi, PingDub; test; package
