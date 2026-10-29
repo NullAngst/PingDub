@@ -28,6 +28,18 @@ mkdir -p "$PREFIX" "$SRC"
 
 step() { printf '\n=== %s ===\n' "$*"; }
 
+# Fail now rather than an hour in, after Qt and FFmpeg are built.
+# rsvg-convert (librsvg2-bin, librsvg2-tools or librsvg, depending on distro)
+# renders the PNG icon appimagetool requires.
+missing=()
+for c in git curl python3 rsvg-convert; do
+    command -v "$c" >/dev/null 2>&1 || missing+=("$c")
+done
+if [ "${#missing[@]}" -gt 0 ]; then
+    printf 'Missing required commands: %s\n' "${missing[*]}" >&2
+    exit 1
+fi
+
 # Newest release tag of a git repo, matching a regex, by version sort.
 latest_tag() {
     git ls-remote --tags --refs "$1" | sed 's|.*refs/tags/||' | grep -E "$2" | sort -V | tail -1
@@ -195,6 +207,20 @@ for d in wayland-shell-integration wayland-decoration-client wayland-graphics-in
     fi
 done
 ls "$APPDIR"/usr/plugins/platforms/
+
+# appimagetool (since b082d2e, 2026-10-29) builds .DirIcon only from a PNG or
+# XPM named after the desktop file's Icon= and refuses to package without one.
+# SVG is ignored. Render the SVG to a 256x256 PNG: one copy in the hicolor
+# theme for desktop integration, one at the AppDir root for appimagetool,
+# and .DirIcon pointing at it so the AppDir is valid on its own.
+ICON_ID=io.github.nullangst.PingDub
+ICON_PNG_DIR=$APPDIR/usr/share/icons/hicolor/256x256/apps
+mkdir -p "$ICON_PNG_DIR"
+rsvg-convert -w 256 -h 256 -o "$ICON_PNG_DIR/$ICON_ID.png" "$ROOT/packaging/pingdub.svg"
+rm -f "$APPDIR/$ICON_ID.png" "$APPDIR/.DirIcon"
+cp "$ICON_PNG_DIR/$ICON_ID.png" "$APPDIR/$ICON_ID.png"
+ln -s "$ICON_ID.png" "$APPDIR/.DirIcon"
+file -L "$APPDIR/.DirIcon"
 
 # Fail if a host-only library slipped in.
 BAD=$(find "$APPDIR" \( -name 'libasound.so*' -o -name 'libudev.so*' -o -name 'libGL.so*' -o -name 'libEGL.so*' \
